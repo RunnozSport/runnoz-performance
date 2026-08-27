@@ -1,0 +1,63 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --runnoz-red: #FF5C4D;
+  --runnoz-navy: #0F1E3D;
+  --runnoz-light: #1A2A4D;
+  --bg-dark: #0D1117;
+  --bg-card: #161B22;
+  --border-color: #30363D;
+  --text-primary: #F0F6FC;
+  --text-secondary: #8B949E;
+  --success: #3FB950;
+  --warning: #FFA657;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--bg-dark);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+input, textarea, select {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-family: inherit;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--runnoz-red);
+  box-shadow: 0 0 0 2px rgba(255, 92, 77, 0.1);
+}
+
+video {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+canvas {
+  display: block;
+}
