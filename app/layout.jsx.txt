@@ -1,8 +1,8 @@
 import './globals.css'
 
 export const metadata = {
-  title: 'Runnoz Performance Tracker',
-  description: 'Track lift, jump, and sprint performance with AI-powered movement analysis',
+  title: 'Runnoz Performance',
+  description: 'Performance tracking',
 }
 
 export default function RootLayout({ children }) {
