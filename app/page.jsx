@@ -10,45 +10,51 @@ export default function Page() {
   const canvasRef = useRef(null)
   const detectorRef = useRef(null)
   const rafRef = useRef(null)
-  
-  // Use a Ref to track active state inside animation frames without closure staleness
   const isTrackingRef = useRef(false)
 
   useEffect(() => {
+    let isMounted = true
+
     const loadTF = async () => {
       try {
         const tf = await import('@tensorflow/tfjs')
         await import('@tensorflow/tfjs-backend-webgl')
         const poseDetection = await import('@tensorflow-models/pose-detection')
         
+        await tf.ready()
         await tf.setBackend('webgl')
+
         const detector = await poseDetection.createDetector(
           poseDetection.SupportedModels.BlazePose,
-          { runtime: 'tfjs', enableSmoothing: true }
+          { runtime: 'tfjs', enableSmoothing: true, modelType: 'lite' }
         )
 
-        detectorRef.current = detector
-        setPoseReady(true)
-        setStatus('✅ Ready - Click START')
-        console.log('TensorFlow loaded')
+        if (isMounted) {
+          detectorRef.current = detector
+          setPoseReady(true)
+          setStatus('✅ Ready - Click START')
+        }
       } catch (error) {
-        setStatus('Error loading TensorFlow')
-        console.error(error)
+        console.error('TensorFlow Load Error:', error)
+        if (isMounted) setStatus('Error loading TF: ' + error.message)
       }
     }
+
     loadTF()
 
     return () => {
+      isMounted = false
+      isTrackingRef.current = false
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
   }, [])
 
   const startCamera = async () => {
     if (!poseReady) return
-    
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false
       })
 
@@ -56,32 +62,22 @@ export default function Page() {
         videoRef.current.srcObject = stream
         
         videoRef.current.onloadedmetadata = () => {
-          if (canvasRef.current && videoRef.current) {
-            canvasRef.current.width = videoRef.current.videoWidth
-            canvasRef.current.height = videoRef.current.videoHeight
-          }
+          videoRef.current.play()
           
+          if (canvasRef.current && videoRef.current) {
+            // Force exact matching internal resolution
+            canvasRef.current.width = videoRef.current.videoWidth || 640
+            canvasRef.current.height = videoRef.current.videoHeight || 480
+          }
+
           isTrackingRef.current = true
           setCameraActive(true)
-          setStatus('Warming up AI...')
-          warmupDetector()
+          setStatus('🎥 AI Tracking Active')
+          startPoseDetection()
         }
       }
     } catch (err) {
       setStatus('Camera error: ' + err.message)
-    }
-  }
-
-  const warmupDetector = async () => {
-    try {
-      if (videoRef.current && detectorRef.current) {
-        await detectorRef.current.estimatePoses(videoRef.current)
-        setStatus('🎥 Tracking...')
-        startPoseDetection()
-      }
-    } catch (error) {
-      console.error('Warmup error:', error)
-      setStatus('Detection error')
     }
   }
 
@@ -95,34 +91,38 @@ export default function Page() {
     const ctx = canvas.getContext('2d')
 
     const detect = async () => {
-      // Check ref instead of state to avoid stale closure issues
       if (!isTrackingRef.current) return
 
       try {
         if (video.readyState >= 2) {
-          const poses = await detector.estimatePoses(video)
+          // Sync sizes dynamically if dimensions changed
+          if (canvas.width !== video.videoWidth && video.videoWidth > 0) {
+            canvas.width = video.videoWidth
+            canvas.height = video.videoHeight
+          }
 
+          const poses = await detector.estimatePoses(video, { flipHorizontal: false })
+
+          // Clear previous frame
           ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-          if (poses && poses.length > 0) {
+          if (poses && poses.length > 0 && poses[0].keypoints) {
             const keypoints = poses[0].keypoints
 
-            // 1. Draw GREEN skeleton
-            ctx.strokeStyle = '#00FF00'
-            ctx.lineWidth = 3
-            ctx.fillStyle = '#00FF00'
-            ctx.globalAlpha = 0.9
-
+            // 1. DRAW GREEN SKELETON CONNECTIONS
             const connections = [
               [11, 13], [13, 15], [12, 14], [14, 16],
               [11, 12], [11, 23], [12, 24], [23, 24],
               [23, 25], [25, 27], [24, 26], [26, 28]
             ]
 
+            ctx.strokeStyle = '#00FF00'
+            ctx.lineWidth = 4
+
             connections.forEach(([start, end]) => {
               const startKp = keypoints[start]
               const endKp = keypoints[end]
-              if (startKp && endKp && startKp.score > 0.3 && endKp.score > 0.3) {
+              if (startKp && endKp && (startKp.score || 0) > 0.3 && (endKp.score || 0) > 0.3) {
                 ctx.beginPath()
                 ctx.moveTo(startKp.x, startKp.y)
                 ctx.lineTo(endKp.x, endKp.y)
@@ -130,22 +130,22 @@ export default function Page() {
               }
             })
 
+            // 2. DRAW GREEN JOINTS
+            ctx.fillStyle = '#00FF00'
             keypoints.forEach((kp) => {
-              if (kp && kp.score > 0.3) {
+              if (kp && (kp.score || 0) > 0.3) {
                 ctx.beginPath()
-                ctx.arc(kp.x, kp.y, 5, 0, Math.PI * 2)
+                ctx.arc(kp.x, kp.y, 6, 0, Math.PI * 2)
                 ctx.fill()
               }
             })
 
-            ctx.globalAlpha = 1.0
-
-            // 2. Draw RED bar between wrists
+            // 3. DRAW RED BAR BETWEEN WRISTS
             const leftWrist = keypoints[15]
             const rightWrist = keypoints[16]
-            if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
+            if (leftWrist && rightWrist && (leftWrist.score || 0) > 0.3 && (rightWrist.score || 0) > 0.3) {
               ctx.strokeStyle = '#FF5C4D'
-              ctx.lineWidth = 5
+              ctx.lineWidth = 6
               ctx.beginPath()
               ctx.moveTo(leftWrist.x, leftWrist.y)
               ctx.lineTo(rightWrist.x, rightWrist.y)
@@ -153,19 +153,17 @@ export default function Page() {
             }
           }
 
-          // 3. Draw metrics text
+          // 4. DRAW METRICS OVERLAY
           ctx.fillStyle = '#FF5C4D'
-          ctx.font = 'bold 26px Arial'
-          ctx.shadowColor = '#000'
-          ctx.shadowBlur = 4
-          ctx.fillText('0.95 m/s', 20, 50)
-          ctx.font = '18px Arial'
-          ctx.fillText('1250W', 20, 80)
-          ctx.fillText('1RM: 130kg', 20, 110)
-          ctx.fillText('Reps: 5', 20, 140)
+          ctx.font = 'bold 24px Arial'
+          ctx.fillText('0.95 m/s', 20, 40)
+          ctx.font = '16px Arial'
+          ctx.fillText('1250W', 20, 65)
+          ctx.fillText('1RM: 130kg', 20, 90)
+          ctx.fillText('Reps: 5', 20, 115)
         }
       } catch (error) {
-        console.error('Detection error:', error)
+        console.error('Detection frame error:', error)
       }
 
       if (isTrackingRef.current) {
@@ -179,10 +177,10 @@ export default function Page() {
   const stopCamera = () => {
     isTrackingRef.current = false
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    
+
     if (videoRef.current?.srcObject) {
       const stream = videoRef.current.srcObject
-      stream.getTracks().forEach(t => t.stop())
+      stream.getTracks().forEach((t) => t.stop())
       videoRef.current.srcObject = null
     }
 
@@ -205,12 +203,12 @@ export default function Page() {
       </p>
 
       {!cameraActive && (
-        <button 
-          onClick={startCamera} 
+        <button
+          onClick={startCamera}
           disabled={!poseReady}
           style={{
             width: '100%',
-            padding: '60px 20px',
+            padding: '20px',
             backgroundColor: poseReady ? '#FF5C4D' : '#666',
             color: '#FFF',
             border: 'none',
@@ -218,8 +216,7 @@ export default function Page() {
             fontSize: '18px',
             fontWeight: '700',
             cursor: poseReady ? 'pointer' : 'not-allowed',
-            marginBottom: '20px',
-            opacity: poseReady ? 1 : 0.6
+            marginBottom: '20px'
           }}
         >
           {poseReady ? '▶ START VBT TRACKING' : 'LOADING AI...'}
@@ -232,35 +229,30 @@ export default function Page() {
         maxWidth: '600px',
         borderRadius: '8px',
         overflow: 'hidden',
-        border: '3px solid #FF5C4D',
-        marginBottom: '20px'
+        border: '3px solid #FF5C4D'
       }}>
-        <video 
-          ref={videoRef} 
-          autoPlay 
-          playsInline 
-          muted 
-          style={{
-            width: '100%',
-            height: 'auto',
-            display: 'block',
-            minHeight: '300px'
-          }} 
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          style={{ width: '100%', height: 'auto', display: 'block' }}
         />
-        <canvas 
-          ref={canvasRef} 
+        <canvas
+          ref={canvasRef}
           style={{
             position: 'absolute',
             top: 0,
             left: 0,
             width: '100%',
             height: '100%',
+            pointerEvents: 'none',
             zIndex: 10
-          }} 
+          }}
         />
-        
+
         {cameraActive && (
-          <button 
+          <button
             onClick={stopCamera}
             style={{
               position: 'absolute',
@@ -272,7 +264,6 @@ export default function Page() {
               border: 'none',
               borderRadius: '6px',
               cursor: 'pointer',
-              fontSize: '14px',
               fontWeight: 'bold',
               zIndex: 20
             }}
