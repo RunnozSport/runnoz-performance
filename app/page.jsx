@@ -5,14 +5,7 @@ export default function Page() {
   const [status, setStatus] = useState('Loading AI Models...')
   const [cameraActive, setCameraActive] = useState(false)
   const [poseReady, setPoseReady] = useState(false)
-
-  // VBT Metrics State
   const [loadKg, setLoadKg] = useState(100)
-  const [currentVel, setCurrentVel] = useState(0)
-  const [peakVel, setPeakVel] = useState(0)
-  const [peakPower, setPeakPower] = useState(0)
-  const [repCount, setRepCount] = useState(0)
-  const [est1RM, setEst1RM] = useState(0)
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
@@ -20,10 +13,17 @@ export default function Page() {
   const rafRef = useRef(null)
   const isTrackingRef = useRef(false)
 
-  // Math Tracking Refs
+  // Synchronous Tracking Refs (Fixes zero calculations)
   const lastYRef = useRef(null)
   const lastTimeRef = useRef(null)
   const isConcentricRef = useRef(false)
+  
+  // Real-time Metric Refs
+  const currentVelRef = useRef(0)
+  const peakVelRef = useRef(0)
+  const peakPowerRef = useRef(0)
+  const repCountRef = useRef(0)
+  const est1RMRef = useRef(0)
 
   useEffect(() => {
     let isMounted = true
@@ -84,6 +84,15 @@ export default function Page() {
             canvasRef.current.height = videoRef.current.videoHeight || 480
           }
 
+          // Reset metric tracking variables
+          lastYRef.current = null
+          lastTimeRef.current = null
+          currentVelRef.current = 0
+          peakVelRef.current = 0
+          peakPowerRef.current = 0
+          repCountRef.current = 0
+          est1RMRef.current = 0
+
           isTrackingRef.current = true
           setCameraActive(true)
           setStatus('🎥 Tracking Barbell Velocity')
@@ -124,54 +133,59 @@ export default function Page() {
             const leftWrist = keypoints[9]
             const rightWrist = keypoints[10]
 
-            // Calculate Pixels to Meters Ratio based on Torso (~0.50m)
-            let metersPerPixel = 0.0025
-            if (shoulder && hip && shoulder.score > 0.1 && hip.score > 0.1) {
+            // 1. Calculate Pixels to Meters Ratio
+            let metersPerPixel = 0.003 // Responsive baseline (~330px per meter)
+            if (shoulder && hip && (shoulder.score || 0) > 0.05 && (hip.score || 0) > 0.05) {
               const torsoPx = Math.hypot(shoulder.x - hip.x, shoulder.y - hip.y)
               if (torsoPx > 10) {
                 metersPerPixel = 0.50 / torsoPx
               }
             }
 
-            // Fallback wrist position calculation
+            // 2. Wrist Position Detection
             let currentY = null
-            if (leftWrist && rightWrist && leftWrist.score > 0.1 && rightWrist.score > 0.1) {
+            if (leftWrist && rightWrist && (leftWrist.score || 0) > 0.05 && (rightWrist.score || 0) > 0.05) {
               currentY = (leftWrist.y + rightWrist.y) / 2
-            } else if (leftWrist && leftWrist.score > 0.1) {
+            } else if (leftWrist && (leftWrist.score || 0) > 0.05) {
               currentY = leftWrist.y
-            } else if (rightWrist && rightWrist.score > 0.1) {
+            } else if (rightWrist && (rightWrist.score || 0) > 0.05) {
               currentY = rightWrist.y
             }
 
+            // 3. Real-Time Math & Calculation Engine
             if (currentY !== null) {
               if (lastYRef.current !== null && lastTimeRef.current !== null) {
-                const deltaY = lastYRef.current - currentY
-                const deltaTime = (now - lastTimeRef.current) / 1000
+                const deltaY = lastYRef.current - currentY // In canvas coordinates, Up = positive
+                const deltaTime = (now - lastTimeRef.current) / 1000 // Convert ms to Seconds
 
                 if (deltaTime > 0 && deltaTime < 0.2) {
                   const rawVelocity = (deltaY * metersPerPixel) / deltaTime
-                  const displayVel = Math.abs(rawVelocity) > 0.01 ? rawVelocity : 0
-                  setCurrentVel(displayVel)
+                  currentVelRef.current = rawVelocity
 
-                  if (rawVelocity > 0.05) {
+                  // Upward Concentric Lift Phase Detection (> 0.03 m/s threshold)
+                  if (rawVelocity > 0.03) {
                     if (!isConcentricRef.current) {
                       isConcentricRef.current = true
                     }
 
-                    setPeakVel((prev) => {
-                      const maxV = Math.max(prev, rawVelocity)
+                    // Calculate Peak Velocity
+                    if (rawVelocity > peakVelRef.current) {
+                      peakVelRef.current = parseFloat(rawVelocity.toFixed(2))
+                      
+                      // Calculate Power: Force (Load * 9.81) * Velocity
                       const force = loadKg * 9.81
-                      setPeakPower(Math.round(force * maxV))
+                      peakPowerRef.current = Math.round(force * rawVelocity)
 
-                      if (maxV > 0) {
-                        const calculated1RM = Math.round(loadKg / (1.13 - 0.7 * maxV))
-                        if (calculated1RM > loadKg) setEst1RM(calculated1RM)
+                      // Calculate 1RM estimation
+                      const calculated1RM = Math.round(loadKg / (1.13 - 0.7 * rawVelocity))
+                      if (calculated1RM > loadKg) {
+                        est1RMRef.current = calculated1RM
                       }
-                      return parseFloat(maxV.toFixed(2))
-                    })
-                  } else if (rawVelocity < -0.05 && isConcentricRef.current) {
+                    }
+                  } else if (rawVelocity < -0.03 && isConcentricRef.current) {
+                    // Descent transition -> Increment rep count
                     isConcentricRef.current = false
-                    setRepCount((prev) => prev + 1)
+                    repCountRef.current += 1
                   }
                 }
               }
@@ -179,6 +193,7 @@ export default function Page() {
               lastYRef.current = currentY
               lastTimeRef.current = now
 
+              // Draw Red Bar Line between wrists
               if (leftWrist && rightWrist) {
                 ctx.strokeStyle = '#FF5C4D'
                 ctx.lineWidth = 6
@@ -189,7 +204,7 @@ export default function Page() {
               }
             }
 
-            // Draw Skeleton Connections
+            // Draw Skeleton
             const connections = [
               [5, 7], [7, 9], [6, 8], [8, 10],
               [5, 6], [5, 11], [6, 12], [11, 12],
@@ -200,7 +215,7 @@ export default function Page() {
             connections.forEach(([start, end]) => {
               const startKp = keypoints[start]
               const endKp = keypoints[end]
-              if (startKp && endKp && startKp.score > 0.1 && endKp.score > 0.1) {
+              if (startKp && endKp && (startKp.score || 0) > 0.05 && (endKp.score || 0) > 0.05) {
                 ctx.beginPath()
                 ctx.moveTo(startKp.x, startKp.y)
                 ctx.lineTo(endKp.x, endKp.y)
@@ -209,19 +224,20 @@ export default function Page() {
             })
           }
 
-          // HUD Overlay Text
-          ctx.fillStyle = currentVel > 0 ? '#00FF00' : '#FF5C4D'
+          // Direct Canvas Text HUD Render (Reads straight from Refs)
+          const vel = currentVelRef.current
+          ctx.fillStyle = vel > 0.03 ? '#00FF00' : '#FF5C4D'
           ctx.font = 'bold 26px Arial'
           ctx.shadowColor = '#000000'
           ctx.shadowBlur = 4
-          ctx.fillText(`VELOCITY: ${currentVel.toFixed(2)} m/s`, 20, 45)
+          ctx.fillText(`VELOCITY: ${vel.toFixed(2)} m/s`, 20, 45)
 
           ctx.fillStyle = '#FFFFFF'
           ctx.font = 'bold 18px Arial'
-          ctx.fillText(`PEAK VEL: ${peakVel} m/s`, 20, 75)
-          ctx.fillText(`POWER: ${peakPower} W`, 20, 100)
-          ctx.fillText(`EST 1RM: ${est1RM} kg`, 20, 125)
-          ctx.fillText(`REPS: ${repCount}`, 20, 150)
+          ctx.fillText(`PEAK VEL: ${peakVelRef.current} m/s`, 20, 75)
+          ctx.fillText(`POWER: ${peakPowerRef.current} W`, 20, 100)
+          ctx.fillText(`EST 1RM: ${est1RMRef.current} kg`, 20, 125)
+          ctx.fillText(`REPS: ${repCountRef.current}`, 20, 150)
 
         } catch (err) {
           console.error('Frame calculations error:', err)
@@ -264,7 +280,6 @@ export default function Page() {
         {status}
       </p>
 
-      {/* Bar Weight Input Control */}
       <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
         <label style={{ fontWeight: 'bold' }}>BAR LOAD (KG):</label>
         <input 
