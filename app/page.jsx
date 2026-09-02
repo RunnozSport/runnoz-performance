@@ -22,13 +22,12 @@ export default function Page() {
         console.log('Loading TensorFlow...')
         const tf = await import('@tensorflow/tfjs')
         const webgl = await import('@tensorflow/tfjs-backend-webgl')
-        const coco = await import('@tensorflow-models/coco-ssd')
         const poseDetection = await import('@tensorflow-models/pose-detection')
         
         await tf.setBackend('webgl')
         console.log('Backend:', tf.getBackend())
 
-        // Load BlazePose detector
+        // Load BlazePose
         const detector = await poseDetection.createDetector(
           poseDetection.SupportedModels.BlazePose,
           {
