@@ -39,8 +39,7 @@ export default function Page() {
     
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false
+        video: { facingMode: 'environment', audio: false }
       })
 
       videoRef.current.srcObject = stream
@@ -54,7 +53,6 @@ export default function Page() {
           canvasRef.current.height = videoRef.current.videoHeight
         }
         
-        // Warmup frame - run detection once before starting loop
         warmupDetector().then(() => {
           setStatus('✅ Tracking active!')
           startPoseDetection()
@@ -97,13 +95,11 @@ export default function Page() {
           setDebug(`Frame ${frameCount}: ${poses.length} poses`)
         }
 
-        // Clear and draw
         ctx.clearRect(0, 0, canvas.width, canvas.height)
 
         if (poses && poses.length > 0) {
           const keypoints = poses[0].keypoints
 
-          // GREEN skeleton
           ctx.strokeStyle = '#00FF00'
           ctx.lineWidth = 3
           ctx.fillStyle = '#00FF00'
@@ -133,7 +129,6 @@ export default function Page() {
             }
           })
 
-          // RED bar
           const leftWrist = keypoints[15]
           const rightWrist = keypoints[16]
           if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
@@ -146,7 +141,6 @@ export default function Page() {
           }
         }
 
-        // Metrics
         ctx.fillStyle = '#FF5C4D'
         ctx.font = 'bold 26px Arial'
         ctx.shadowColor = '#000'
@@ -253,4 +247,13 @@ export default function Page() {
               cursor: 'pointer',
               fontSize: '14px',
               fontWeight: 'bold',
-              zIndex:
+              zIndex: 20
+            }}
+          >
+            STOP
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
