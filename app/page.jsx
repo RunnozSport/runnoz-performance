@@ -15,24 +15,24 @@ export default function Page() {
   const repCountRef = useRef(0)
   const lastYRef = useRef(null)
 
-  // Initialize TensorFlow.js Pose Detection
+  // Initialize TensorFlow.js
   useEffect(() => {
     const initTF = async () => {
       try {
         console.log('Loading TensorFlow...')
         const tf = await import('@tensorflow/tfjs')
         const webgl = await import('@tensorflow/tfjs-backend-webgl')
+        const coco = await import('@tensorflow-models/coco-ssd')
         const poseDetection = await import('@tensorflow-models/pose-detection')
         
-        // Set backend
         await tf.setBackend('webgl')
-        console.log('TensorFlow backend:', tf.getBackend())
+        console.log('Backend:', tf.getBackend())
 
-        // Create detector
+        // Load BlazePose detector
         const detector = await poseDetection.createDetector(
-          poseDetection.SupportedModels.MovenetSinglePose,
+          poseDetection.SupportedModels.BlazePose,
           {
-            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+            runtime: 'tfjs',
             enableSmoothing: true
           }
         )
@@ -40,9 +40,9 @@ export default function Page() {
         detectorRef.current = detector
         setPoseReady(true)
         setStatus('Ready - Click START')
-        console.log('✅ TensorFlow Pose Detection Ready!')
+        console.log('✅ TensorFlow Ready!')
       } catch (error) {
-        console.error('TensorFlow init error:', error)
+        console.error('Error:', error)
         setStatus('Error: ' + error.message)
       }
     }
@@ -89,16 +89,13 @@ export default function Page() {
       if (!cameraActive || !video || !detectorRef.current) return
 
       try {
-        // Run pose detection
         const poses = await detectorRef.current.estimatePoses(video)
 
-        // Set canvas size
         if (canvas.width === 0) {
           canvas.width = video.videoWidth || 640
           canvas.height = video.videoHeight || 480
         }
 
-        // Draw video
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
         let barSpeed = 0
@@ -106,9 +103,9 @@ export default function Page() {
         if (poses && poses.length > 0) {
           const keypoints = poses[0].keypoints
 
-          // Wrists: 9=left, 10=right
-          const leftWrist = keypoints[9]
-          const rightWrist = keypoints[10]
+          // BlazePose wrist indices: 15=left, 16=right
+          const leftWrist = keypoints[15]
+          const rightWrist = keypoints[16]
 
           if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
             const centerX = (leftWrist.x + rightWrist.x) / 2 / canvas.width
@@ -119,7 +116,7 @@ export default function Page() {
               positionHistoryRef.current.shift()
             }
 
-            // Calculate velocity
+            // Velocity from position changes
             if (positionHistoryRef.current.length > 5) {
               let totalDist = 0
               const recent = positionHistoryRef.current
@@ -135,9 +132,7 @@ export default function Page() {
             // Rep detection
             if (lastYRef.current !== null) {
               const yDelta = centerY - lastYRef.current
-              if (yDelta > 0.06 && lastYRef.current > centerY) {
-                repCountRef.current++
-              }
+              if (yDelta > 0.06) repCountRef.current++
             }
             lastYRef.current = centerY
           }
@@ -148,15 +143,10 @@ export default function Page() {
           ctx.fillStyle = '#00FF00'
           ctx.globalAlpha = 0.8
 
-          // Skeleton connections
           const connections = [
-            [5, 7], [7, 9],       // Left arm
-            [6, 8], [8, 10],      // Right arm
-            [5, 6],               // Shoulders
-            [5, 11], [6, 12],     // Torso
-            [11, 12],             // Hips
-            [11, 13], [13, 15],   // Left leg
-            [12, 14], [14, 16]    // Right leg
+            [11, 13], [13, 15], [12, 14], [14, 16],
+            [11, 12], [11, 23], [12, 24], [23, 24],
+            [23, 25], [25, 27], [24, 26], [26, 28]
           ]
 
           connections.forEach(([start, end]) => {
@@ -170,7 +160,6 @@ export default function Page() {
             }
           })
 
-          // Draw joints
           keypoints.forEach((kp) => {
             if (kp && kp.score > 0.3) {
               ctx.beginPath()
@@ -181,7 +170,7 @@ export default function Page() {
 
           ctx.globalAlpha = 1.0
 
-          // Draw bar (red line between wrists)
+          // Draw bar
           if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
             ctx.strokeStyle = '#FF5C4D'
             ctx.lineWidth = 4
@@ -192,7 +181,7 @@ export default function Page() {
           }
         }
 
-        // Draw metrics
+        // Metrics
         const weight = 30
         const reps = repCountRef.current
         const power = (weight * 9.81 * barSpeed) / 1000
@@ -209,7 +198,7 @@ export default function Page() {
         ctx.fillText(`1RM: ${est1rm.toFixed(0)}kg`, 20, 110)
         ctx.fillText(`Reps: ${reps}`, 20, 140)
 
-        setStatus(`Tracking... ${reps} reps | Speed: ${barSpeed.toFixed(2)} m/s`)
+        setStatus(`${reps} reps | ${barSpeed.toFixed(2)} m/s`)
 
         if (cameraActive) {
           rafRef.current = requestAnimationFrame(detect)
@@ -326,7 +315,7 @@ export default function Page() {
           <h3>Sessions ({sessions.length})</h3>
           {sessions.map((s) => (
             <div key={s.id} style={{ padding: '10px', fontSize: '12px', borderBottom: '1px solid #30363D' }}>
-              <strong>{s.timestamp}</strong><br/>{s.weight}kg × {s.reps} reps | 1RM: {s.est1rm.toFixed(0)}kg
+              <strong>{s.timestamp}</strong><br/>{s.weight}kg × {s.reps} | 1RM: {s.est1rm.toFixed(0)}kg
             </div>
           ))}
         </div>
