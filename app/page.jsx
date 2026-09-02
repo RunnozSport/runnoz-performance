@@ -27,10 +27,8 @@ export default function Page() {
         detectorRef.current = detector
         setPoseReady(true)
         setStatus('Ready - Click START')
-        setDebug('TensorFlow loaded')
       } catch (error) {
         setStatus('Error: ' + error.message)
-        setDebug('TF Error: ' + error.message)
       }
     }
     loadTF()
@@ -39,7 +37,6 @@ export default function Page() {
   const startCamera = async () => {
     if (!poseReady) return
     
-    setDebug('Starting camera...')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
@@ -47,80 +44,66 @@ export default function Page() {
       })
 
       videoRef.current.srcObject = stream
-      setDebug('Stream set')
       
       videoRef.current.onloadedmetadata = () => {
-        setDebug('Video metadata loaded, starting detection')
         setCameraActive(true)
-        setStatus('Detecting pose...')
+        setStatus('Warming up detector...')
         
         if (canvasRef.current && videoRef.current) {
           canvasRef.current.width = videoRef.current.videoWidth
           canvasRef.current.height = videoRef.current.videoHeight
-          setDebug(`Canvas: ${canvasRef.current.width}x${canvasRef.current.height}`)
         }
         
-        startPoseDetection()
+        // Warmup frame - run detection once before starting loop
+        warmupDetector().then(() => {
+          setStatus('✅ Tracking active!')
+          startPoseDetection()
+        })
       }
     } catch (err) {
       setStatus('Error: ' + err.message)
-      setDebug('Camera error: ' + err.message)
+    }
+  }
+
+  const warmupDetector = async () => {
+    try {
+      setDebug('Warmup: Running first detection...')
+      await detectorRef.current.estimatePoses(videoRef.current)
+      setDebug('Warmup: Complete')
+    } catch (error) {
+      setDebug('Warmup error: ' + error.message)
     }
   }
 
   const startPoseDetection = () => {
-    setDebug('startPoseDetection called')
     const video = videoRef.current
     const canvas = canvasRef.current
     const detector = detectorRef.current
 
-    if (!video) {
-      setDebug('❌ video null')
-      return
-    }
-    if (!canvas) {
-      setDebug('❌ canvas null')
-      return
-    }
-    if (!detector) {
-      setDebug('❌ detector null')
-      return
-    }
+    if (!video || !canvas || !detector) return
 
     const ctx = canvas.getContext('2d')
     let frameCount = 0
 
     const detect = async () => {
       frameCount++
-      
-      // Log EVERY frame for first 5 frames
-      if (frameCount <= 5) {
-        setDebug(`Frame ${frameCount} - starting pose estimation`)
-      }
 
       if (!cameraActive) return
 
       try {
         const poses = await detector.estimatePoses(video)
-        
-        if (frameCount <= 5) {
-          setDebug(`Frame ${frameCount} - ${poses.length} poses detected`)
+
+        if (frameCount % 10 === 0 || frameCount === 1) {
+          setDebug(`Frame ${frameCount}: ${poses.length} poses`)
         }
 
-        // Draw test circle to verify canvas works
-        ctx.fillStyle = '#FF5C4D'
-        ctx.beginPath()
-        ctx.arc(50, 50, 30, 0, Math.PI * 2)
-        ctx.fill()
-
-        // Draw test metrics
-        ctx.fillStyle = '#00FF00'
-        ctx.font = 'bold 20px Arial'
-        ctx.fillText('TEST: ' + frameCount, 20, 100)
+        // Clear and draw
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
 
         if (poses && poses.length > 0) {
           const keypoints = poses[0].keypoints
 
+          // GREEN skeleton
           ctx.strokeStyle = '#00FF00'
           ctx.lineWidth = 3
           ctx.fillStyle = '#00FF00'
@@ -150,6 +133,7 @@ export default function Page() {
             }
           })
 
+          // RED bar
           const leftWrist = keypoints[15]
           const rightWrist = keypoints[16]
           if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
@@ -162,25 +146,22 @@ export default function Page() {
           }
         }
 
+        // Metrics
         ctx.fillStyle = '#FF5C4D'
         ctx.font = 'bold 26px Arial'
-        ctx.fillText('0.95 m/s', 20, 150)
+        ctx.shadowColor = '#000'
+        ctx.shadowBlur = 4
+        ctx.fillText('0.95 m/s', 20, 50)
         ctx.font = '18px Arial'
-        ctx.fillText('1250W', 20, 180)
-        ctx.fillText('1RM: 130kg', 20, 210)
-        ctx.fillText('Reps: 5', 20, 240)
-
-        if (frameCount === 1) {
-          setStatus('✅ Tracking active!')
-        }
+        ctx.fillText('1250W', 20, 80)
+        ctx.fillText('1RM: 130kg', 20, 110)
+        ctx.fillText('Reps: 5', 20, 140)
 
         if (cameraActive) {
           rafRef.current = requestAnimationFrame(detect)
         }
       } catch (error) {
-        if (frameCount <= 5) {
-          setDebug(`Frame ${frameCount} ERROR: ${error.message}`)
-        }
+        setDebug('Error: ' + error.message)
       }
     }
 
@@ -200,7 +181,7 @@ export default function Page() {
     <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC', padding: '20px' }}>
       <h1 style={{ fontSize: '24px', marginBottom: '10px' }}>RUNNOZ VBT {poseReady ? '✅' : '⏳'}</h1>
       <p style={{ fontSize: '16px', fontWeight: 'bold', color: '#FF5C4D', marginBottom: '5px' }}>Status: {status}</p>
-      <p style={{ fontSize: '12px', color: '#8B949E', marginBottom: '20px', fontFamily: 'monospace' }}>Debug: {debug}</p>
+      <p style={{ fontSize: '12px', color: '#8B949E', marginBottom: '20px' }}>Debug: {debug}</p>
 
       {!cameraActive && (
         <button 
@@ -272,13 +253,4 @@ export default function Page() {
               cursor: 'pointer',
               fontSize: '14px',
               fontWeight: 'bold',
-              zIndex: 20
-            }}
-          >
-            STOP
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
+              zIndex:
