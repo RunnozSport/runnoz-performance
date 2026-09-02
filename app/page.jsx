@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Zap, Home, Camera, StopCircle } from 'lucide-react'
 
 export default function Page() {
@@ -8,7 +8,7 @@ export default function Page() {
   const [cameraActive, setCameraActive] = useState(false)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const animationRef = useRef(null)
+  const rafRef = useRef(null)
 
   const startCamera = async () => {
     try {
@@ -17,89 +17,105 @@ export default function Page() {
         audio: false
       })
 
-      videoRef.current.srcObject = stream
-      setCameraActive(true)
-      setTimeout(() => drawOverlay(), 500)
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        setCameraActive(true)
+
+        // Wait for video to be ready
+        videoRef.current.onplaying = () => {
+          if (canvasRef.current) {
+            canvasRef.current.width = videoRef.current.videoWidth
+            canvasRef.current.height = videoRef.current.videoHeight
+            drawLoop()
+          }
+        }
+      }
     } catch (err) {
       alert('Camera Error: ' + err.message)
     }
   }
 
-  const drawOverlay = () => {
+  const drawLoop = () => {
     const canvas = canvasRef.current
     const video = videoRef.current
-    if (!canvas || !video) return
+    if (!canvas || !video || !cameraActive) return
 
     const ctx = canvas.getContext('2d')
 
-    const draw = () => {
-      if (!cameraActive) return
+    // Draw video to canvas
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
-      if (canvas.width === 0) {
-        canvas.width = video.videoWidth || 640
-        canvas.height = video.videoHeight || 480
-      }
+    // Draw skeleton (green)
+    ctx.strokeStyle = '#00FF00'
+    ctx.lineWidth = 3
+    ctx.fillStyle = '#00FF00'
 
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    const w = canvas.width
+    const h = canvas.height
 
-      ctx.strokeStyle = '#00FF00'
-      ctx.lineWidth = 2
-      ctx.fillStyle = '#00FF00'
+    // Skeleton joints
+    const joints = [
+      { x: w * 0.2, y: h * 0.25 },  // 0: left shoulder
+      { x: w * 0.8, y: h * 0.25 },  // 1: right shoulder
+      { x: w * 0.15, y: h * 0.45 }, // 2: left elbow
+      { x: w * 0.85, y: h * 0.45 }, // 3: right elbow
+      { x: w * 0.1, y: h * 0.65 },  // 4: left wrist
+      { x: w * 0.9, y: h * 0.65 },  // 5: right wrist
+      { x: w * 0.5, y: h * 0.35 },  // 6: chest
+      { x: w * 0.5, y: h * 0.75 },  // 7: pelvis
+    ]
 
-      const w = canvas.width
-      const h = canvas.height
+    // Draw connections (bones)
+    const connections = [
+      [0, 2], [1, 3],  // shoulders to elbows
+      [2, 4], [3, 5],  // elbows to wrists
+      [0, 1],          // shoulders
+      [0, 6], [1, 6],  // shoulders to chest
+      [6, 7],          // chest to pelvis
+    ]
 
-      const points = [
-        { x: w * 0.2, y: h * 0.3 },
-        { x: w * 0.8, y: h * 0.3 },
-        { x: w * 0.15, y: h * 0.5 },
-        { x: w * 0.85, y: h * 0.5 },
-        { x: w * 0.1, y: h * 0.7 },
-        { x: w * 0.9, y: h * 0.7 },
-        { x: w * 0.5, y: h * 0.4 },
-        { x: w * 0.5, y: h * 0.8 },
-      ]
-
-      const connections = [
-        [0, 2], [1, 3], [2, 4], [3, 5], [0, 1], [0, 6], [1, 6], [6, 7],
-      ]
-
-      connections.forEach(([start, end]) => {
-        ctx.beginPath()
-        ctx.moveTo(points[start].x, points[start].y)
-        ctx.lineTo(points[end].x, points[end].y)
-        ctx.stroke()
-      })
-
-      points.forEach(p => {
-        ctx.beginPath()
-        ctx.arc(p.x, p.y, 6, 0, Math.PI * 2)
-        ctx.fill()
-      })
-
-      ctx.strokeStyle = '#FF5C4D'
-      ctx.lineWidth = 5
+    connections.forEach(([start, end]) => {
       ctx.beginPath()
-      ctx.moveTo(points[4].x, points[4].y)
-      ctx.lineTo(points[5].x, points[5].y)
+      ctx.moveTo(joints[start].x, joints[start].y)
+      ctx.lineTo(joints[end].x, joints[end].y)
       ctx.stroke()
+    })
 
-      ctx.fillStyle = '#FF5C4D'
-      ctx.font = 'bold 22px Arial'
-      ctx.fillText('0.98 m/s', 20, 50)
-      ctx.font = '16px Arial'
-      ctx.fillText('1,250 W', 20, 80)
-      ctx.fillText('130 kg', 20, 110)
-      ctx.fillText('RPE: 8/10', 20, 140)
+    // Draw circles (joints)
+    joints.forEach(joint => {
+      ctx.beginPath()
+      ctx.arc(joint.x, joint.y, 7, 0, Math.PI * 2)
+      ctx.fill()
+    })
 
-      animationRef.current = requestAnimationFrame(draw)
+    // Draw bar (red line between wrists)
+    ctx.strokeStyle = '#FF5C4D'
+    ctx.lineWidth = 6
+    ctx.beginPath()
+    ctx.moveTo(joints[4].x, joints[4].y)
+    ctx.lineTo(joints[5].x, joints[5].y)
+    ctx.stroke()
+
+    // Draw metrics text
+    ctx.fillStyle = '#FF5C4D'
+    ctx.font = 'bold 26px Arial'
+    ctx.shadowColor = '#000'
+    ctx.shadowBlur = 4
+
+    ctx.fillText('0.98 m/s', 20, 50)
+    
+    ctx.font = '18px Arial'
+    ctx.fillText('Power: 1,250 W', 20, 80)
+    ctx.fillText('1RM: 130 kg', 20, 110)
+    ctx.fillText('RPE: 8/10', 20, 140)
+
+    if (cameraActive) {
+      rafRef.current = requestAnimationFrame(drawLoop)
     }
-
-    draw()
   }
 
   const stopCamera = () => {
-    if (animationRef.current) cancelAnimationFrame(animationRef.current)
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
     if (videoRef.current?.srcObject) {
       videoRef.current.srcObject.getTracks().forEach(t => t.stop())
     }
@@ -108,7 +124,14 @@ export default function Page() {
 
   return (
     <div style={styles.container}>
-      <video ref={videoRef} autoPlay playsInline muted style={{ display: 'none' }} />
+      {/* Hidden video element - feeds data to canvas */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{ display: 'none' }}
+      />
 
       <div style={styles.header}>
         <Zap size={20} color="#FF5C4D" />
@@ -129,7 +152,11 @@ export default function Page() {
 
         {cameraActive && (
           <div style={styles.cameraBox}>
-            <canvas ref={canvasRef} style={styles.canvas} />
+            {/* Canvas displays video + skeleton overlay */}
+            <canvas
+              ref={canvasRef}
+              style={styles.canvas}
+            />
             <button onClick={stopCamera} style={styles.stopBtn}>
               <StopCircle size={18} /> STOP
             </button>
