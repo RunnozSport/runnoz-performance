@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from 'react'
 
 export default function Page() {
-  const [status, setStatus] = useState('Loading AI...')
+  const [status, setStatus] = useState('Initializing...')
   const [cameraActive, setCameraActive] = useState(false)
   const [poseReady, setPoseReady] = useState(false)
   const [sessions, setSessions] = useState([])
@@ -13,29 +13,29 @@ export default function Page() {
   const rafRef = useRef(null)
   const positionHistoryRef = useRef([])
   const repCountRef = useRef(0)
-  const lastPositionRef = useRef(null)
+  const lastYRef = useRef(null)
 
-  // Wait for MediaPipe to load
+  // Check for MediaPipe Pose every 100ms
   useEffect(() => {
-    const checkMediaPipe = setInterval(() => {
-      if (window.Pose) {
-        console.log('MediaPipe Pose loaded!')
+    const checkPose = setInterval(() => {
+      if (typeof window !== 'undefined' && window.Pose) {
+        console.log('✅ Pose ready!')
         setPoseReady(true)
-        setStatus('ready')
-        clearInterval(checkMediaPipe)
+        setStatus('Ready - Click START')
+        clearInterval(checkPose)
       }
     }, 100)
-    
-    return () => clearInterval(checkMediaPipe)
+
+    return () => clearInterval(checkPose)
   }, [])
 
   const startCamera = async () => {
     if (!poseReady) {
-      alert('AI is still loading, please wait')
+      alert('Pose Detection still loading...')
       return
     }
 
-    setStatus('requesting camera...')
+    setStatus('Requesting camera...')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
@@ -45,18 +45,23 @@ export default function Page() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         setCameraActive(true)
-        setStatus('initializing pose detection...')
+        setStatus('Detecting pose...')
         repCountRef.current = 0
         positionHistoryRef.current = []
-        
-        setTimeout(() => initPoseDetection(), 500)
+        lastYRef.current = null
+
+        setTimeout(() => startPoseDetection(), 500)
       }
     } catch (err) {
-      setStatus('error: ' + err.message)
+      setStatus('Camera Error: ' + err.message)
     }
   }
 
-  const initPoseDetection = () => {
+  const startPoseDetection = () => {
+    const video = videoRef.current
+    const canvas = canvasRef.current
+    if (!video || !canvas || !window.Pose) return
+
     const pose = new window.Pose({
       locateFile: (file) =>
         `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469629/${file}`
@@ -70,91 +75,70 @@ export default function Page() {
     })
 
     poseRef.current = pose
-    let frameCount = 0
+    const ctx = canvas.getContext('2d')
 
     const onResults = (results) => {
       if (!cameraActive) return
-
-      const canvas = canvasRef.current
-      const video = videoRef.current
-      if (!canvas || !video) return
-
-      const ctx = canvas.getContext('2d')
 
       if (canvas.width === 0) {
         canvas.width = video.videoWidth || 640
         canvas.height = video.videoHeight || 480
       }
 
-      // Draw video frame
+      // Draw video
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
-      let wristPos = null
       let barSpeed = 0
 
-      // Draw pose skeleton
       if (results.poseLandmarks && results.poseLandmarks.length > 0) {
         const landmarks = results.poseLandmarks
 
-        // Get wrist positions (landmarks 15 and 16)
+        // Get wrists
         const leftWrist = landmarks[16]
         const rightWrist = landmarks[15]
 
         if (leftWrist && rightWrist && leftWrist.visibility > 0.3 && rightWrist.visibility > 0.3) {
-          wristPos = {
-            x: (leftWrist.x + rightWrist.x) / 2,
-            y: (leftWrist.y + rightWrist.y) / 2,
-            z: (leftWrist.z + rightWrist.z) / 2
-          }
+          const centerX = (leftWrist.x + rightWrist.x) / 2
+          const centerY = (leftWrist.y + rightWrist.y) / 2
+          const centerZ = (leftWrist.z + rightWrist.z) / 2
 
-          // Track position for velocity
-          positionHistoryRef.current.push(wristPos)
+          positionHistoryRef.current.push({ x: centerX, y: centerY, z: centerZ })
           if (positionHistoryRef.current.length > 30) {
             positionHistoryRef.current.shift()
           }
 
-          // Calculate velocity from position changes
+          // Calculate velocity
           if (positionHistoryRef.current.length > 5) {
-            const recent = positionHistoryRef.current
             let totalDist = 0
+            const recent = positionHistoryRef.current
             for (let i = 1; i < recent.length; i++) {
-              const dist = Math.sqrt(
-                (recent[i].x - recent[i-1].x) ** 2 +
-                (recent[i].y - recent[i-1].y) ** 2
-              )
+              const dx = recent[i].x - recent[i - 1].x
+              const dy = recent[i].y - recent[i - 1].y
+              const dz = recent[i].z - recent[i - 1].z
+              const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
               totalDist += dist
             }
-            barSpeed = totalDist * 1.2 // Scale factor for m/s
-            barSpeed = Math.min(barSpeed, 2.5)
+            barSpeed = Math.min(totalDist * 1.5, 2.5)
           }
 
-          // Detect repetitions (up/down movement)
-          if (lastPositionRef.current && positionHistoryRef.current.length > 5) {
-            const yDelta = wristPos.y - lastPositionRef.current.y
-            
-            // If moving down significantly, increment rep
-            if (yDelta > 0.05 && lastPositionRef.current.isMovingUp) {
-              repCountRef.current++
-            }
-            lastPositionRef.current.isMovingUp = yDelta < -0.02
+          // Rep detection
+          if (lastYRef.current !== null) {
+            const yDelta = centerY - lastYRef.current
+            if (yDelta > 0.05) repCountRef.current++
           }
-
-          if (!lastPositionRef.current) {
-            lastPositionRef.current = { y: wristPos.y, isMovingUp: false }
-          } else {
-            lastPositionRef.current.y = wristPos.y
-          }
+          lastYRef.current = centerY
         }
 
-        // Draw skeleton connections
+        // Draw skeleton green
         ctx.strokeStyle = '#00FF00'
         ctx.lineWidth = 2
+        ctx.fillStyle = '#00FF00'
         ctx.globalAlpha = 0.8
 
         const connections = [
-          [11, 13], [13, 15], [12, 14], [14, 16], // Arms
-          [11, 12], [11, 23], [12, 24], [23, 24], // Torso
-          [23, 25], [25, 27], [24, 26], [26, 28]  // Legs
+          [11, 13], [13, 15], [12, 14], [14, 16],
+          [11, 12], [11, 23], [12, 24], [23, 24],
+          [23, 25], [25, 27], [24, 26], [26, 28]
         ]
 
         connections.forEach(([start, end]) => {
@@ -168,8 +152,6 @@ export default function Page() {
           }
         })
 
-        // Draw joints
-        ctx.fillStyle = '#00FF00'
         landmarks.forEach((landmark) => {
           if (landmark.visibility > 0.3) {
             ctx.beginPath()
@@ -181,8 +163,8 @@ export default function Page() {
         ctx.globalAlpha = 1.0
       }
 
-      // Draw bar path (red line between wrists)
-      if (wristPos) {
+      // Draw bar red
+      if (results.poseLandmarks) {
         const leftWrist = results.poseLandmarks[16]
         const rightWrist = results.poseLandmarks[15]
         if (leftWrist && rightWrist && leftWrist.visibility > 0.3 && rightWrist.visibility > 0.3) {
@@ -195,37 +177,36 @@ export default function Page() {
         }
       }
 
-      // Draw metrics
+      // Metrics
       const weight = 30
       const reps = repCountRef.current
       const power = (weight * 9.81 * barSpeed) / 1000
-      const est1rm = weight * (1 + reps / 30)
+      const est1rm = weight * (1 + Math.max(reps, 1) / 30)
 
       ctx.fillStyle = '#FF5C4D'
-      ctx.font = 'bold 24px Arial'
+      ctx.font = 'bold 26px Arial'
       ctx.shadowColor = '#000'
-      ctx.shadowBlur = 3
+      ctx.shadowBlur = 4
 
-      ctx.fillText(`Speed: ${barSpeed.toFixed(2)} m/s`, 20, 50)
+      ctx.fillText(`${barSpeed.toFixed(2)} m/s`, 20, 50)
       ctx.font = '18px Arial'
-      ctx.fillText(`Power: ${power.toFixed(0)} W`, 20, 80)
-      ctx.fillText(`1RM: ${est1rm.toFixed(0)} kg`, 20, 110)
+      ctx.fillText(`${power.toFixed(0)}W`, 20, 80)
+      ctx.fillText(`1RM: ${est1rm.toFixed(0)}kg`, 20, 110)
       ctx.fillText(`Reps: ${reps}`, 20, 140)
 
-      if (cameraActive) {
-        frameCount++
-        if (frameCount % 5 === 0) {
-          setStatus(`detecting... reps: ${reps}`)
-        }
-      }
+      setStatus(`Tracking... ${reps} reps`)
     }
 
     pose.onResults(onResults)
 
     const detect = async () => {
-      if (cameraActive && videoRef.current && poseRef.current) {
-        await poseRef.current.send({ image: videoRef.current })
-        rafRef.current = requestAnimationFrame(detect)
+      if (cameraActive && video && poseRef.current) {
+        try {
+          await poseRef.current.send({ image: video })
+          rafRef.current = requestAnimationFrame(detect)
+        } catch (e) {
+          console.error(e)
+        }
       }
     }
 
@@ -239,28 +220,24 @@ export default function Page() {
     }
     setCameraActive(false)
 
-    // Log session
     if (repCountRef.current > 0) {
       const session = {
         id: Date.now(),
-        timestamp: new Date().toISOString(),
+        timestamp: new Date().toLocaleString(),
         weight: 30,
         reps: repCountRef.current,
-        barSpeed: 0.95,
-        power: (30 * 9.81 * 0.95) / 1000,
         est1rm: 30 * (1 + repCountRef.current / 30)
       }
       setSessions([...sessions, session])
+      setStatus('Session saved')
     }
-
-    setStatus('session saved')
   }
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC' }}>
       <div style={{ padding: '16px 20px', borderBottom: '2px solid #FF5C4D', backgroundColor: '#161B22' }}>
         <h1 style={{ margin: 0, fontSize: '18px', fontWeight: '700' }}>RUNNOZ VBT {poseReady ? '✅' : '⏳'}</h1>
-        <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#8B949E' }}>Status: {status}</p>
+        <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#8B949E' }}>{status}</p>
       </div>
 
       <div style={{ padding: '20px' }}>
@@ -332,15 +309,15 @@ export default function Page() {
               opacity: poseReady ? 1 : 0.6
             }}
           >
-            {poseReady ? 'START AI VBT TRACKING' : 'LOADING AI...'}
+            {poseReady ? 'START VBT TRACKING' : 'LOADING AI...'}
           </button>
         )}
 
         <div style={{ backgroundColor: '#161B22', padding: '20px', borderRadius: '8px', border: '1px solid #30363D' }}>
-          <h3>Sessions: {sessions.length}</h3>
+          <h3>Sessions ({sessions.length})</h3>
           {sessions.map((s) => (
             <div key={s.id} style={{ padding: '10px', fontSize: '12px', borderBottom: '1px solid #30363D' }}>
-              {s.weight}kg × {s.reps} | {s.barSpeed.toFixed(2)} m/s | 1RM: {s.est1rm.toFixed(0)}kg
+              <strong>{s.timestamp}</strong><br/>{s.weight}kg × {s.reps} reps | 1RM: {s.est1rm.toFixed(0)}kg
             </div>
           ))}
         </div>
