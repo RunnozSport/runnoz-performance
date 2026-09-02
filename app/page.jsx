@@ -14,10 +14,9 @@ export default function Page() {
   const poseDetectorRef = useRef(null)
 
   useEffect(() => {
-    const saved = localStorage.getItem('sessions')
-    if (saved) setSessions(JSON.parse(saved))
-    initMediaPipe()
-  }, [])
+  const saved = localStorage.getItem('sessions')
+  if (saved) setSessions(JSON.parse(saved))
+}, [])
 
   useEffect(() => {
     if (sessions.length > 0) {
@@ -26,13 +25,9 @@ export default function Page() {
   }, [sessions])
 
   const initMediaPipe = async () => {
-    try {
-      const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest')
-      console.log('MediaPipe loaded')
-    } catch (e) {
-      console.log('MediaPipe loading...')
-    }
-  }
+  // MediaPipe will be loaded in browser only
+  console.log('App initialized')
+}
 
   const startCamera = async () => {
     try {
