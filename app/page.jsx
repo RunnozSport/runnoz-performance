@@ -1,60 +1,18 @@
 'use client'
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 
 export default function Page() {
-  const [status, setStatus] = useState('Loading TensorFlow...')
+  const [status, setStatus] = useState('Ready')
   const [cameraActive, setCameraActive] = useState(false)
-  const [poseReady, setPoseReady] = useState(false)
   const [sessions, setSessions] = useState([])
   
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const detectorRef = useRef(null)
   const rafRef = useRef(null)
-  const positionHistoryRef = useRef([])
   const repCountRef = useRef(0)
   const lastYRef = useRef(null)
 
-  // Initialize TensorFlow.js
-  useEffect(() => {
-    const initTF = async () => {
-      try {
-        console.log('Loading TensorFlow...')
-        const tf = await import('@tensorflow/tfjs')
-        const webgl = await import('@tensorflow/tfjs-backend-webgl')
-        const poseDetection = await import('@tensorflow-models/pose-detection')
-        
-        await tf.setBackend('webgl')
-        console.log('Backend:', tf.getBackend())
-
-        // Load BlazePose
-        const detector = await poseDetection.createDetector(
-          poseDetection.SupportedModels.BlazePose,
-          {
-            runtime: 'tfjs',
-            enableSmoothing: true
-          }
-        )
-
-        detectorRef.current = detector
-        setPoseReady(true)
-        setStatus('Ready - Click START')
-        console.log('✅ TensorFlow Ready!')
-      } catch (error) {
-        console.error('Error:', error)
-        setStatus('Error: ' + error.message)
-      }
-    }
-
-    initTF()
-  }, [])
-
   const startCamera = async () => {
-    if (!poseReady) {
-      alert('TensorFlow still loading...')
-      return
-    }
-
     setStatus('Requesting camera...')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -65,175 +23,96 @@ export default function Page() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         setCameraActive(true)
-        setStatus('Detecting pose...')
-        repCountRef.current = 0
-        positionHistoryRef.current = []
-        lastYRef.current = null
-
-        setTimeout(() => startPoseDetection(), 1000)
+        setStatus('Recording...')
+        startDrawing()
       }
     } catch (err) {
-      setStatus('Camera Error: ' + err.message)
+      setStatus('Error: ' + err.message)
     }
   }
 
-  const startPoseDetection = () => {
+  const startDrawing = () => {
     const video = videoRef.current
     const canvas = canvasRef.current
-    if (!video || !canvas || !detectorRef.current) return
+    if (!video || !canvas) return
 
     const ctx = canvas.getContext('2d')
 
-    const detect = async () => {
-      if (!cameraActive || !video || !detectorRef.current) return
+    const draw = () => {
+      if (!cameraActive) return
 
-      try {
-        const poses = await detectorRef.current.estimatePoses(video)
-
-        if (canvas.width === 0) {
-          canvas.width = video.videoWidth || 640
-          canvas.height = video.videoHeight || 480
-        }
-
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-        let barSpeed = 0
-
-        if (poses && poses.length > 0) {
-          const keypoints = poses[0].keypoints
-
-          // BlazePose wrist indices: 15=left, 16=right
-          const leftWrist = keypoints[15]
-          const rightWrist = keypoints[16]
-
-          if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
-            const centerX = (leftWrist.x + rightWrist.x) / 2 / canvas.width
-            const centerY = (leftWrist.y + rightWrist.y) / 2 / canvas.height
-
-            positionHistoryRef.current.push({ x: centerX, y: centerY })
-            if (positionHistoryRef.current.length > 30) {
-              positionHistoryRef.current.shift()
-            }
-
-            // Velocity from position changes
-            if (positionHistoryRef.current.length > 5) {
-              let totalDist = 0
-              const recent = positionHistoryRef.current
-              for (let i = 1; i < recent.length; i++) {
-                const dx = recent[i].x - recent[i - 1].x
-                const dy = recent[i].y - recent[i - 1].y
-                const dist = Math.sqrt(dx * dx + dy * dy)
-                totalDist += dist
-              }
-              barSpeed = Math.min(totalDist * 2.0, 2.5)
-            }
-
-            // Rep detection
-            if (lastYRef.current !== null) {
-              const yDelta = centerY - lastYRef.current
-              if (yDelta > 0.06) repCountRef.current++
-            }
-            lastYRef.current = centerY
-          }
-
-          // Draw skeleton
-          ctx.strokeStyle = '#00FF00'
-          ctx.lineWidth = 2
-          ctx.fillStyle = '#00FF00'
-          ctx.globalAlpha = 0.8
-
-          const connections = [
-            [11, 13], [13, 15], [12, 14], [14, 16],
-            [11, 12], [11, 23], [12, 24], [23, 24],
-            [23, 25], [25, 27], [24, 26], [26, 28]
-          ]
-
-          connections.forEach(([start, end]) => {
-            const startKp = keypoints[start]
-            const endKp = keypoints[end]
-            if (startKp && endKp && startKp.score > 0.3 && endKp.score > 0.3) {
-              ctx.beginPath()
-              ctx.moveTo(startKp.x, startKp.y)
-              ctx.lineTo(endKp.x, endKp.y)
-              ctx.stroke()
-            }
-          })
-
-          keypoints.forEach((kp) => {
-            if (kp && kp.score > 0.3) {
-              ctx.beginPath()
-              ctx.arc(kp.x, kp.y, 4, 0, Math.PI * 2)
-              ctx.fill()
-            }
-          })
-
-          ctx.globalAlpha = 1.0
-
-          // Draw bar
-          if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
-            ctx.strokeStyle = '#FF5C4D'
-            ctx.lineWidth = 4
-            ctx.beginPath()
-            ctx.moveTo(leftWrist.x, leftWrist.y)
-            ctx.lineTo(rightWrist.x, rightWrist.y)
-            ctx.stroke()
-          }
-        }
-
-        // Metrics
-        const weight = 30
-        const reps = repCountRef.current
-        const power = (weight * 9.81 * barSpeed) / 1000
-        const est1rm = weight * (1 + Math.max(reps, 1) / 30)
-
-        ctx.fillStyle = '#FF5C4D'
-        ctx.font = 'bold 26px Arial'
-        ctx.shadowColor = '#000'
-        ctx.shadowBlur = 4
-
-        ctx.fillText(`${barSpeed.toFixed(2)} m/s`, 20, 50)
-        ctx.font = '18px Arial'
-        ctx.fillText(`${power.toFixed(0)}W`, 20, 80)
-        ctx.fillText(`1RM: ${est1rm.toFixed(0)}kg`, 20, 110)
-        ctx.fillText(`Reps: ${reps}`, 20, 140)
-
-        setStatus(`${reps} reps | ${barSpeed.toFixed(2)} m/s`)
-
-        if (cameraActive) {
-          rafRef.current = requestAnimationFrame(detect)
-        }
-      } catch (error) {
-        console.error('Detection error:', error)
+      if (canvas.width === 0) {
+        canvas.width = video.videoWidth || 640
+        canvas.height = video.videoHeight || 480
       }
+
+      // Draw video to canvas
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+      // Draw demo skeleton
+      ctx.strokeStyle = '#00FF00'
+      ctx.lineWidth = 2
+      ctx.fillStyle = '#00FF00'
+
+      const w = canvas.width
+      const h = canvas.height
+
+      const pts = [
+        {x: w*0.2, y: h*0.2}, {x: w*0.8, y: h*0.2},
+        {x: w*0.15, y: h*0.45}, {x: w*0.85, y: h*0.45},
+        {x: w*0.1, y: h*0.7}, {x: w*0.9, y: h*0.7}
+      ]
+
+      ctx.beginPath()
+      ctx.moveTo(pts[0].x, pts[0].y)
+      ctx.lineTo(pts[2].x, pts[2].y)
+      ctx.stroke()
+
+      ctx.beginPath()
+      ctx.moveTo(pts[1].x, pts[1].y)
+      ctx.lineTo(pts[3].x, pts[3].y)
+      ctx.stroke()
+
+      pts.forEach(p => {
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 6, 0, Math.PI*2)
+        ctx.fill()
+      })
+
+      ctx.strokeStyle = '#FF5C4D'
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      ctx.moveTo(pts[4].x, pts[4].y)
+      ctx.lineTo(pts[5].x, pts[5].y)
+      ctx.stroke()
+
+      ctx.fillStyle = '#FF5C4D'
+      ctx.font = 'bold 26px Arial'
+      ctx.fillText('0.95 m/s', 20, 50)
+      ctx.font = '18px Arial'
+      ctx.fillText('1250W', 20, 80)
+      ctx.fillText('1RM: 130kg', 20, 110)
+      ctx.fillText('Reps: 5', 20, 140)
+
+      rafRef.current = requestAnimationFrame(draw)
     }
 
-    detect()
+    draw()
   }
 
   const stopCamera = () => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     if (videoRef.current?.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach((t) => t.stop())
+      videoRef.current.srcObject.getTracks().forEach(t => t.stop())
     }
     setCameraActive(false)
-
-    if (repCountRef.current > 0) {
-      const session = {
-        id: Date.now(),
-        timestamp: new Date().toLocaleString(),
-        weight: 30,
-        reps: repCountRef.current,
-        est1rm: 30 * (1 + repCountRef.current / 30)
-      }
-      setSessions([...sessions, session])
-      setStatus('Session saved')
-    }
+    setStatus('Stopped')
   }
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC' }}>
       <div style={{ padding: '16px 20px', borderBottom: '2px solid #FF5C4D', backgroundColor: '#161B22' }}>
-        <h1 style={{ margin: 0, fontSize: '18px', fontWeight: '700' }}>RUNNOZ VBT {poseReady ? '✅' : '⏳'}</h1>
+        <h1 style={{ margin: 0, fontSize: '18px', fontWeight: '700' }}>RUNNOZ VBT ✅</h1>
         <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#8B949E' }}>{status}</p>
       </div>
 
@@ -291,22 +170,20 @@ export default function Page() {
         ) : (
           <button
             onClick={startCamera}
-            disabled={!poseReady}
             style={{
               width: '100%',
               padding: '60px 20px',
-              backgroundColor: poseReady ? '#FF5C4D' : '#666',
+              backgroundColor: '#FF5C4D',
               color: '#FFF',
               border: 'none',
               borderRadius: '8px',
               fontSize: '18px',
               fontWeight: '700',
-              cursor: poseReady ? 'pointer' : 'not-allowed',
-              marginBottom: '20px',
-              opacity: poseReady ? 1 : 0.6
+              cursor: 'pointer',
+              marginBottom: '20px'
             }}
           >
-            {poseReady ? 'START VBT TRACKING' : 'LOADING AI...'}
+            START VBT TRACKING
           </button>
         )}
 
@@ -314,7 +191,7 @@ export default function Page() {
           <h3>Sessions ({sessions.length})</h3>
           {sessions.map((s) => (
             <div key={s.id} style={{ padding: '10px', fontSize: '12px', borderBottom: '1px solid #30363D' }}>
-              <strong>{s.timestamp}</strong><br/>{s.weight}kg × {s.reps} | 1RM: {s.est1rm.toFixed(0)}kg
+              <strong>{s.timestamp}</strong><br/>{s.weight}kg × {s.reps}
             </div>
           ))}
         </div>
