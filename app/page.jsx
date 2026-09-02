@@ -1,4 +1,100 @@
-const runDetectionLoop = () => {
+'use client'
+import { useState, useRef, useEffect } from 'react'
+
+export default function Page() {
+  const [status, setStatus] = useState('Loading AI Models...')
+  const [cameraActive, setCameraActive] = useState(false)
+  const [poseReady, setPoseReady] = useState(false)
+  
+  // VBT Metrics State
+  const [loadKg, setLoadKg] = useState(100) // Default load in kg
+  const [currentVel, setCurrentVel] = useState(0)
+  const [peakVel, setPeakVel] = useState(0)
+  const [peakPower, setPeakPower] = useState(0)
+  const [repCount, setRepCount] = useState(0)
+  const [est1RM, setEst1RM] = useState(0)
+
+  const videoRef = useRef(null)
+  const canvasRef = useRef(null)
+  const detectorRef = useRef(null)
+  const rafRef = useRef(null)
+  const isTrackingRef = useRef(false)
+
+  // Tracking Math Variables (kept in Refs to avoid react re-renders inside the animation loop)
+  const lastYRef = useRef(null)
+  const lastTimeRef = useRef(null)
+  const isConcentricRef = useRef(false) // Tracking rep ascent
+  const repVelocitiesRef = useRef([])
+
+  useEffect(() => {
+    let isMounted = true
+
+    const initTensorFlow = async () => {
+      try {
+        const tf = await import('@tensorflow/tfjs')
+        await import('@tensorflow/tfjs-backend-webgl')
+        const poseDetection = await import('@tensorflow-models/pose-detection')
+
+        await tf.ready()
+        await tf.setBackend('webgl')
+
+        const detector = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+        )
+
+        if (isMounted) {
+          detectorRef.current = detector
+          setPoseReady(true)
+          setStatus('✅ Ready - Click START')
+        }
+      } catch (error) {
+        console.error('TFJS Load Error:', error)
+        if (isMounted) setStatus('Error loading AI model: ' + error.message)
+      }
+    }
+
+    initTensorFlow()
+
+    return () => {
+      isMounted = false
+      isTrackingRef.current = false
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    }
+  }, [])
+
+  const startCamera = async () => {
+    if (!poseReady) return
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        audio: false
+      })
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current.play()
+          
+          if (canvasRef.current && videoRef.current) {
+            canvasRef.current.width = videoRef.current.videoWidth || 640
+            canvasRef.current.height = videoRef.current.videoHeight || 480
+          }
+
+          isTrackingRef.current = true
+          setCameraActive(true)
+          setStatus('🎥 Tracking Barbell Velocity')
+          runDetectionLoop()
+        }
+      }
+    } catch (err) {
+      setStatus('Camera error: ' + err.message)
+    }
+  }
+
+  const runDetectionLoop = () => {
     const detect = async () => {
       if (!isTrackingRef.current) return
 
@@ -145,3 +241,127 @@ const runDetectionLoop = () => {
 
     detect()
   }
+  }
+
+  const stopCamera = () => {
+    isTrackingRef.current = false
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject
+      stream.getTracks().forEach((t) => t.stop())
+      videoRef.current.srcObject = null
+    }
+
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d')
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height)
+    }
+
+    setCameraActive(false)
+    setStatus('Stopped')
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC', padding: '20px' }}>
+      <h1 style={{ fontSize: '28px', fontWeight: 'bold', marginBottom: '8px' }}>
+        RUNNOZ VBT {poseReady ? '✅' : '⏳'}
+      </h1>
+      <p style={{ fontSize: '16px', fontWeight: 'bold', color: '#FF5C4D', marginBottom: '16px' }}>
+        {status}
+      </p>
+
+      {/* Bar Weight Input Control */}
+      <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <label style={{ fontWeight: 'bold' }}>BAR LOAD (KG):</label>
+        <input 
+          type="number" 
+          value={loadKg} 
+          onChange={(e) => setLoadKg(Number(e.target.value))}
+          style={{
+            padding: '8px 12px',
+            borderRadius: '6px',
+            border: '1px solid #FF5C4D',
+            backgroundColor: '#161B22',
+            color: '#FFF',
+            width: '100px',
+            fontSize: '16px',
+            fontWeight: 'bold'
+          }}
+        />
+      </div>
+
+      {!cameraActive && (
+        <button
+          onClick={startCamera}
+          disabled={!poseReady}
+          style={{
+            width: '100%',
+            maxWidth: '600px',
+            padding: '20px',
+            backgroundColor: poseReady ? '#FF5C4D' : '#666',
+            color: '#FFF',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '18px',
+            fontWeight: '700',
+            cursor: poseReady ? 'pointer' : 'not-allowed',
+            marginBottom: '20px'
+          }}
+        >
+          {poseReady ? '▶ START VBT TRACKING' : 'LOADING AI...'}
+        </button>
+      )}
+
+      <div style={{
+        position: 'relative',
+        width: '100%',
+        maxWidth: '600px',
+        borderRadius: '8px',
+        overflow: 'hidden',
+        border: '3px solid #FF5C4D'
+      }}>
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          style={{ width: '100%', height: 'auto', display: 'block' }}
+        />
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+            zIndex: 10
+          }}
+        />
+
+        {cameraActive && (
+          <button
+            onClick={stopCamera}
+            style={{
+              position: 'absolute',
+              bottom: '16px',
+              right: '16px',
+              padding: '10px 16px',
+              backgroundColor: '#FF5C4D',
+              color: '#FFF',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              zIndex: 20
+            }}
+          >
+            ⏹ STOP
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
