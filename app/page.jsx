@@ -10,26 +10,47 @@ export default function Page() {
 
   const startCamera = async () => {
     try {
-      console.log('Requesting camera...')
+      console.log('Step 1: Getting permission...')
+      
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
       })
-      console.log('Stream granted:', stream)
+      
+      console.log('Step 2: Stream obtained:', stream)
+      console.log('Step 3: videoRef.current exists?', videoRef.current ? 'YES' : 'NO')
+      
+      if (!videoRef.current) {
+        throw new Error('Video element not found')
+      }
       
       videoRef.current.srcObject = stream
-      setCameraActive(true)
-      console.log('Camera active set to true')
+      console.log('Step 4: srcObject set')
+      
+      videoRef.current.play().then(() => {
+        console.log('Step 5: Video playing')
+        setCameraActive(true)
+      }).catch(err => {
+        console.error('Play error:', err)
+      })
+      
     } catch (err) {
-      console.error('Error:', err)
-      alert('Error: ' + err.message)
+      console.error('Full error:', err)
+      alert('Camera Error:\n' + err.message)
     }
   }
 
   const stopCamera = () => {
-    if (videoRef.current?.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(t => t.stop())
+    console.log('Stopping camera...')
+    if (videoRef.current && videoRef.current.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach(t => {
+        console.log('Stopping track:', t)
+        t.stop()
+      })
+      videoRef.current.srcObject = null
     }
     setCameraActive(false)
+    console.log('Camera stopped')
   }
 
   return (
@@ -54,10 +75,10 @@ export default function Page() {
         {cameraActive ? (
           <div style={styles.cameraBox}>
             <video 
-              ref={videoRef} 
-              autoPlay 
-              playsInline 
-              muted
+              ref={videoRef}
+              autoPlay={true}
+              playsInline={true}
+              muted={true}
               style={styles.video}
             />
             <button onClick={stopCamera} style={styles.stopBtn}>
@@ -92,7 +113,7 @@ const styles = {
   tabActive: { backgroundColor: '#FF5C4D', color: '#FFF', borderColor: '#FF5C4D' },
   content: { padding: '20px' },
   startBtn: { width: '100%', padding: '60px 20px', backgroundColor: '#FF5C4D', color: '#FFF', border: 'none', borderRadius: '8px', fontSize: '18px', fontWeight: '700', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', marginBottom: '20px' },
-  cameraBox: { position: 'relative', backgroundColor: '#000', borderRadius: '8px', overflow: 'hidden', marginBottom: '20px', border: '2px solid #FF5C4D' },
+  cameraBox: { position: 'relative', backgroundColor: '#000', borderRadius: '8px', overflow: 'hidden', marginBottom: '20px', border: '2px solid #FF5C4D', width: '100%' },
   video: { width: '100%', height: 'auto', display: 'block', maxHeight: '600px', backgroundColor: '#000' },
   stopBtn: { position: 'absolute', bottom: '16px', right: '16px', backgroundColor: '#FF5C4D', color: '#FFF', border: 'none', padding: '10px 14px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600', fontSize: '12px' },
   form: { backgroundColor: '#161B22', padding: '20px', borderRadius: '8px', border: '1px solid #30363D' },
