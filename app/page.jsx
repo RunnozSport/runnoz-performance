@@ -13,13 +13,11 @@ export default function Page() {
   useEffect(() => {
     const loadTF = async () => {
       try {
-        console.log('Loading TensorFlow...')
         const tf = await import('@tensorflow/tfjs')
         await import('@tensorflow/tfjs-backend-webgl')
         const poseDetection = await import('@tensorflow-models/pose-detection')
         
         await tf.setBackend('webgl')
-
         const detector = await poseDetection.createDetector(
           poseDetection.SupportedModels.BlazePose,
           { runtime: 'tfjs', enableSmoothing: true }
@@ -28,9 +26,7 @@ export default function Page() {
         detectorRef.current = detector
         setPoseReady(true)
         setStatus('Ready - Click START')
-        console.log('✅ TensorFlow Ready!')
       } catch (error) {
-        console.error('TensorFlow error:', error)
         setStatus('Error: ' + error.message)
       }
     }
@@ -38,30 +34,21 @@ export default function Page() {
   }, [])
 
   const startCamera = async () => {
-    if (!poseReady) {
-      alert('TensorFlow still loading...')
-      return
-    }
-
-    setStatus('Requesting camera...')
+    if (!poseReady) return
+    
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+        video: { facingMode: 'environment' },
         audio: false
       })
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        
-        videoRef.current.onplay = () => {
-          console.log('VIDEO PLAYING')
-          setCameraActive(true)
-          setStatus('Detecting pose...')
-          startPoseDetection()
-        }
+      videoRef.current.srcObject = stream
+      videoRef.current.onplay = () => {
+        setCameraActive(true)
+        setStatus('Detecting pose...')
+        startPoseDetection()
       }
     } catch (err) {
-      console.error('Camera error:', err)
       setStatus('Error: ' + err.message)
     }
   }
@@ -71,35 +58,25 @@ export default function Page() {
     const canvas = canvasRef.current
     const detector = detectorRef.current
 
-    if (!video || !canvas || !detector) {
-      console.error('Missing elements')
-      return
-    }
+    if (!video || !canvas || !detector) return
 
     const ctx = canvas.getContext('2d')
     canvas.width = video.videoWidth || 640
     canvas.height = video.videoHeight || 480
 
-    console.log('Starting pose detection, canvas size:', canvas.width, 'x', canvas.height)
-
     const detect = async () => {
-      if (!cameraActive || !video || !detector) return
+      if (!cameraActive) return
 
       try {
-        // ONLY draw overlay on canvas, NOT the video
         ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-        // Get poses
         const poses = await detector.estimatePoses(video)
 
         if (poses && poses.length > 0) {
           const keypoints = poses[0].keypoints
 
-          // Draw skeleton - GREEN
           ctx.strokeStyle = '#00FF00'
           ctx.lineWidth = 3
           ctx.fillStyle = '#00FF00'
-          ctx.globalAlpha = 0.9
 
           const connections = [
             [11, 13], [13, 15], [12, 14], [14, 16],
@@ -118,7 +95,6 @@ export default function Page() {
             }
           })
 
-          // Draw joints
           keypoints.forEach((kp) => {
             if (kp && kp.score > 0.3) {
               ctx.beginPath()
@@ -127,9 +103,6 @@ export default function Page() {
             }
           })
 
-          ctx.globalAlpha = 1.0
-
-          // Draw bar - RED
           const leftWrist = keypoints[15]
           const rightWrist = keypoints[16]
           if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
@@ -139,16 +112,13 @@ export default function Page() {
             ctx.moveTo(leftWrist.x, leftWrist.y)
             ctx.lineTo(rightWrist.x, rightWrist.y)
             ctx.stroke()
-            console.log('Drew red bar')
           }
         }
 
-        // Draw metrics
         ctx.fillStyle = '#FF5C4D'
         ctx.font = 'bold 26px Arial'
         ctx.shadowColor = '#000'
         ctx.shadowBlur = 4
-
         ctx.fillText('0.95 m/s', 20, 50)
         ctx.font = '18px Arial'
         ctx.fillText('1250W', 20, 80)
@@ -177,31 +147,101 @@ export default function Page() {
     setStatus('Stopped')
   }
 
+  const containerStyle = {
+    minHeight: '100vh',
+    backgroundColor: '#0D1117',
+    color: '#F0F6FC',
+    padding: '20px'
+  }
+
+  const headerStyle = {
+    fontSize: '24px',
+    fontWeight: 'bold',
+    marginBottom: '10px'
+  }
+
+  const statusStyle = {
+    fontSize: '16px',
+    fontWeight: 'bold',
+    color: '#FF5C4D',
+    marginBottom: '20px'
+  }
+
+  const buttonStyle = {
+    width: '100%',
+    padding: '60px 20px',
+    backgroundColor: poseReady ? '#FF5C4D' : '#666',
+    color: '#FFF',
+    border: 'none',
+    borderRadius: '8px',
+    fontSize: '18px',
+    fontWeight: '700',
+    cursor: poseReady ? 'pointer' : 'not-allowed',
+    marginBottom: '20px',
+    opacity: poseReady ? 1 : 0.6
+  }
+
+  const videoContainerStyle = {
+    position: 'relative',
+    width: '100%',
+    maxWidth: '600px',
+    borderRadius: '8px',
+    overflow: 'hidden',
+    border: '3px solid #FF5C4D',
+    marginBottom: '20px'
+  }
+
+  const videoStyle = {
+    width: '100%',
+    height: 'auto',
+    display: 'block',
+    minHeight: '300px'
+  }
+
+  const canvasStyle = {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: '100%',
+    height: '100%'
+  }
+
+  const stopButtonStyle = {
+    position: 'absolute',
+    bottom: '16px',
+    right: '16px',
+    padding: '10px 16px',
+    backgroundColor: '#FF5C4D',
+    color: '#FFF',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '14px',
+    fontWeight: 'bold',
+    zIndex: 20
+  }
+
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC', padding: '20px' }}>
-      <h1>RUNNOZ VBT {poseReady ? '✅' : '⏳'}</h1>
-      <p style={{ fontSize: '16px', fontWeight: 'bold', color: '#FF5C4D' }}>Status: {status}</p>
+    <div style={containerStyle}>
+      <h1 style={headerStyle}>RUNNOZ VBT {poseReady ? '✅' : '⏳'}</h1>
+      <p style={statusStyle}>Status: {status}</p>
 
       {!cameraActive && (
-        <button
-          onClick={startCamera}
-          disabled={!poseReady}
-          style={{
-            width: '100%',
-            padding: '60px 20px',
-            backgroundColor: poseReady ? '#FF5C4D' : '#666',
-            color: '#FFF',
-            border: 'none',
-            borderRadius: '8px',
-            fontSize: '18px',
-            fontWeight: '700',
-            cursor: poseReady ? 'pointer' : 'not-allowed',
-            marginBottom: '20px',
-            opacity: poseReady ? 1 : 0.6
-          }}
-        >
+        <button onClick={startCamera} disabled={!poseReady} style={buttonStyle}>
           {poseReady ? 'START VBT TRACKING' : 'LOADING AI...'}
         </button>
       )}
 
-      <div style={{
+      <div style={videoContainerStyle}>
+        <video ref={videoRef} autoPlay playsInline muted style={videoStyle} />
+        <canvas ref={canvasRef} style={canvasStyle} />
+        
+        {cameraActive && (
+          <button onClick={stopCamera} style={stopButtonStyle}>
+            STOP
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
