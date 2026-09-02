@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from 'react'
 
 export default function Page() {
-  const [status, setStatus] = useState('Loading TensorFlow...')
+  const [status, setStatus] = useState('Loading AI Models...')
   const [cameraActive, setCameraActive] = useState(false)
   const [poseReady, setPoseReady] = useState(false)
 
@@ -15,32 +15,36 @@ export default function Page() {
   useEffect(() => {
     let isMounted = true
 
-    const loadTF = async () => {
+    const initTensorFlow = async () => {
       try {
         const tf = await import('@tensorflow/tfjs')
         await import('@tensorflow/tfjs-backend-webgl')
         const poseDetection = await import('@tensorflow-models/pose-detection')
-        
+
         await tf.ready()
         await tf.setBackend('webgl')
 
+        // Use MoveNet - lighter, faster, and reliable across all WebGL browsers
         const detector = await poseDetection.createDetector(
-          poseDetection.SupportedModels.BlazePose,
-          { runtime: 'tfjs', enableSmoothing: true, modelType: 'lite' }
+          poseDetection.SupportedModels.MoveNet,
+          {
+            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
+          }
         )
 
         if (isMounted) {
           detectorRef.current = detector
           setPoseReady(true)
           setStatus('✅ Ready - Click START')
+          console.log('TFJS & MoveNet loaded successfully')
         }
       } catch (error) {
-        console.error('TensorFlow Load Error:', error)
-        if (isMounted) setStatus('Error loading TF: ' + error.message)
+        console.error('TFJS Load Error:', error)
+        if (isMounted) setStatus('Error loading AI model: ' + error.message)
       }
     }
 
-    loadTF()
+    initTensorFlow()
 
     return () => {
       isMounted = false
@@ -54,18 +58,17 @@ export default function Page() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
         audio: false
       })
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream
-        
+
         videoRef.current.onloadedmetadata = () => {
           videoRef.current.play()
           
           if (canvasRef.current && videoRef.current) {
-            // Force exact matching internal resolution
             canvasRef.current.width = videoRef.current.videoWidth || 640
             canvasRef.current.height = videoRef.current.videoHeight || 480
           }
@@ -73,47 +76,46 @@ export default function Page() {
           isTrackingRef.current = true
           setCameraActive(true)
           setStatus('🎥 AI Tracking Active')
-          startPoseDetection()
+          runDetectionLoop()
         }
       }
     } catch (err) {
+      console.error('Camera Access Error:', err)
       setStatus('Camera error: ' + err.message)
     }
   }
 
-  const startPoseDetection = () => {
-    const video = videoRef.current
-    const canvas = canvasRef.current
-    const detector = detectorRef.current
-
-    if (!video || !canvas || !detector) return
-
-    const ctx = canvas.getContext('2d')
-
+  const runDetectionLoop = () => {
     const detect = async () => {
       if (!isTrackingRef.current) return
 
-      try {
-        if (video.readyState >= 2) {
-          // Sync sizes dynamically if dimensions changed
-          if (canvas.width !== video.videoWidth && video.videoWidth > 0) {
-            canvas.width = video.videoWidth
-            canvas.height = video.videoHeight
-          }
+      const video = videoRef.current
+      const canvas = canvasRef.current
+      const detector = detectorRef.current
 
-          const poses = await detector.estimatePoses(video, { flipHorizontal: false })
+      if (video && canvas && detector && video.readyState >= 2) {
+        const ctx = canvas.getContext('2d')
 
-          // Clear previous frame
+        // Synchronize canvas size to video frame size
+        if (canvas.width !== video.videoWidth && video.videoWidth > 0) {
+          canvas.width = video.videoWidth
+          canvas.height = video.videoHeight
+        }
+
+        try {
+          const poses = await detector.estimatePoses(video)
+
+          // Clear previous canvas drawing
           ctx.clearRect(0, 0, canvas.width, canvas.height)
 
           if (poses && poses.length > 0 && poses[0].keypoints) {
             const keypoints = poses[0].keypoints
 
-            // 1. DRAW GREEN SKELETON CONNECTIONS
+            // 1. Draw Green Skeleton Lines
             const connections = [
-              [11, 13], [13, 15], [12, 14], [14, 16],
-              [11, 12], [11, 23], [12, 24], [23, 24],
-              [23, 25], [25, 27], [24, 26], [26, 28]
+              [5, 7], [7, 9], [6, 8], [8, 10],   // Arms
+              [5, 6], [5, 11], [6, 12], [11, 12], // Torso
+              [11, 13], [13, 15], [12, 14], [14, 16] // Legs
             ]
 
             ctx.strokeStyle = '#00FF00'
@@ -130,7 +132,7 @@ export default function Page() {
               }
             })
 
-            // 2. DRAW GREEN JOINTS
+            // 2. Draw Green Joints
             ctx.fillStyle = '#00FF00'
             keypoints.forEach((kp) => {
               if (kp && (kp.score || 0) > 0.3) {
@@ -140,9 +142,9 @@ export default function Page() {
               }
             })
 
-            // 3. DRAW RED BAR BETWEEN WRISTS
-            const leftWrist = keypoints[15]
-            const rightWrist = keypoints[16]
+            // 3. Draw Red Bar Between Wrists (Keypoints 9 & 10 in MoveNet)
+            const leftWrist = keypoints[9]
+            const rightWrist = keypoints[10]
             if (leftWrist && rightWrist && (leftWrist.score || 0) > 0.3 && (rightWrist.score || 0) > 0.3) {
               ctx.strokeStyle = '#FF5C4D'
               ctx.lineWidth = 6
@@ -153,17 +155,19 @@ export default function Page() {
             }
           }
 
-          // 4. DRAW METRICS OVERLAY
+          // 4. Draw Metrics Text
           ctx.fillStyle = '#FF5C4D'
           ctx.font = 'bold 24px Arial'
+          ctx.shadowColor = '#000000'
+          ctx.shadowBlur = 4
           ctx.fillText('0.95 m/s', 20, 40)
           ctx.font = '16px Arial'
           ctx.fillText('1250W', 20, 65)
           ctx.fillText('1RM: 130kg', 20, 90)
           ctx.fillText('Reps: 5', 20, 115)
+        } catch (err) {
+          console.error('Frame pose estimation error:', err)
         }
-      } catch (error) {
-        console.error('Detection frame error:', error)
       }
 
       if (isTrackingRef.current) {
