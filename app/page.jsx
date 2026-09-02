@@ -4,27 +4,37 @@ import { useState, useRef } from 'react'
 export default function Page() {
   const [cameraActive, setCameraActive] = useState(false)
   const [activeTab, setActiveTab] = useState('lift')
+  const [status, setStatus] = useState('ready')
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
 
   const startCamera = async () => {
+    console.log('Start button clicked')
+    setStatus('requesting')
+    
     try {
+      console.log('Requesting camera...')
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false
       })
       
+      console.log('Stream received:', stream)
+      
       if (videoRef.current) {
         videoRef.current.srcObject = stream
-        videoRef.current.play()
+        console.log('Stream set to video element')
         setCameraActive(true)
+        setStatus('recording')
         
-        // Draw overlay after video plays
         setTimeout(() => {
+          console.log('Starting overlay draw')
           drawOverlay()
-        }, 1000)
+        }, 500)
       }
     } catch (err) {
+      console.error('Camera error:', err)
+      setStatus('error: ' + err.message)
       alert('Camera Error: ' + err.message)
     }
   }
@@ -32,22 +42,26 @@ export default function Page() {
   const drawOverlay = () => {
     const canvas = canvasRef.current
     const video = videoRef.current
-    if (!canvas || !video) return
+    if (!canvas || !video) {
+      console.log('Canvas or video missing')
+      return
+    }
+
+    console.log('Drawing overlay')
+    canvas.width = 640
+    canvas.height = 480
 
     const ctx = canvas.getContext('2d')
-    canvas.width = video.offsetWidth
-    canvas.height = video.offsetHeight
 
     const draw = () => {
       if (!cameraActive) return
 
-      // Clear canvas
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       const w = canvas.width
       const h = canvas.height
 
-      // Draw skeleton joints
+      // Green skeleton
       ctx.strokeStyle = '#00FF00'
       ctx.lineWidth = 3
       ctx.fillStyle = '#00FF00'
@@ -58,7 +72,6 @@ export default function Page() {
         {x: w*0.1, y: h*0.7}, {x: w*0.9, y: h*0.7}
       ]
 
-      // Lines
       ctx.beginPath()
       ctx.moveTo(pts[0].x, pts[0].y)
       ctx.lineTo(pts[2].x, pts[2].y)
@@ -69,7 +82,6 @@ export default function Page() {
       ctx.lineTo(pts[3].x, pts[3].y)
       ctx.stroke()
 
-      // Circles
       pts.forEach(p => {
         ctx.beginPath()
         ctx.arc(p.x, p.y, 6, 0, Math.PI*2)
@@ -99,21 +111,24 @@ export default function Page() {
   }
 
   const stopCamera = () => {
+    console.log('Stopping camera')
     if (videoRef.current?.srcObject) {
       videoRef.current.srcObject.getTracks().forEach(t => t.stop())
     }
     setCameraActive(false)
+    setStatus('stopped')
   }
 
   return (
     <div style={{minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC'}}>
       <div style={{padding: '16px 20px', borderBottom: '2px solid #FF5C4D', backgroundColor: '#161B22'}}>
         <h1 style={{margin: 0, fontSize: '18px', fontWeight: '700'}}>RUNNOZ VBT ✅</h1>
+        <p style={{margin: '4px 0 0 0', fontSize: '12px', color: '#8B949E'}}>Status: {status}</p>
       </div>
 
       <div style={{padding: '12px 20px', borderBottom: '1px solid #30363D', display: 'flex', gap: '8px'}}>
-        <button onClick={() => setActiveTab('home')} style={{padding: '8px 16px', backgroundColor: activeTab === 'home' ? '#FF5C4D' : 'transparent', color: '#FFF', border: 'none', borderRadius: '6px', cursor: 'pointer'}}>Home</button>
-        <button onClick={() => setActiveTab('lift')} style={{padding: '8px 16px', backgroundColor: activeTab === 'lift' ? '#FF5C4D' : 'transparent', color: '#FFF', border: 'none', borderRadius: '6px', cursor: 'pointer'}}>Lift</button>
+        <button onClick={() => setActiveTab('home')} style={{padding: '8px 16px', backgroundColor: activeTab === 'home' ? '#FF5C4D' : 'transparent', color: '#FFF', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '14px'}}>Home</button>
+        <button onClick={() => setActiveTab('lift')} style={{padding: '8px 16px', backgroundColor: activeTab === 'lift' ? '#FF5C4D' : 'transparent', color: '#FFF', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '14px'}}>Lift</button>
       </div>
 
       <div style={{padding: '20px'}}>
@@ -122,18 +137,19 @@ export default function Page() {
             <h2>VBT Tracking</h2>
             
             {cameraActive ? (
-              <div style={{position: 'relative', marginBottom: '20px'}}>
+              <div style={{position: 'relative', marginBottom: '20px', width: '100%'}}>
                 <video 
-                  ref={videoRef} 
-                  autoPlay 
-                  playsInline 
-                  muted
+                  ref={videoRef}
+                  autoPlay={true}
+                  playsInline={true}
+                  muted={true}
                   style={{
                     width: '100%',
                     maxHeight: '600px',
                     borderRadius: '8px',
                     display: 'block',
-                    border: '2px solid #FF5C4D'
+                    border: '2px solid #FF5C4D',
+                    backgroundColor: '#000'
                   }}
                 />
                 <canvas 
@@ -143,11 +159,12 @@ export default function Page() {
                     top: 0,
                     left: 0,
                     width: '100%',
-                    borderRadius: '8px'
+                    borderRadius: '8px',
+                    maxHeight: '600px'
                   }}
                 />
                 <button 
-                  onClick={stopCamera} 
+                  onClick={stopCamera}
                   style={{
                     position: 'absolute',
                     bottom: '16px',
@@ -159,7 +176,8 @@ export default function Page() {
                     borderRadius: '6px',
                     cursor: 'pointer',
                     fontSize: '12px',
-                    fontWeight: '600'
+                    fontWeight: '600',
+                    zIndex: 10
                   }}
                 >
                   STOP
@@ -167,7 +185,7 @@ export default function Page() {
               </div>
             ) : (
               <button 
-                onClick={startCamera} 
+                onClick={startCamera}
                 style={{
                   width: '100%',
                   padding: '60px 20px',
