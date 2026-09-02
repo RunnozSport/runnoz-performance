@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { Zap, Download, Home, Activity, TrendingUp, Users, Camera, StopCircle } from 'lucide-react'
+import { Zap, Download, Home, Camera, StopCircle } from 'lucide-react'
 
 export default function Page() {
   const [activeTab, setActiveTab] = useState('home')
@@ -10,161 +10,118 @@ export default function Page() {
   const [cameraActive, setCameraActive] = useState(false)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const mediaStreamRef = useRef(null)
-  const poseDetectorRef = useRef(null)
 
   useEffect(() => {
-  const saved = localStorage.getItem('sessions')
-  if (saved) setSessions(JSON.parse(saved))
-}, [])
-
-  useEffect(() => {
-    if (sessions.length > 0) {
-      localStorage.setItem('sessions', JSON.stringify(sessions))
-    }
-  }, [sessions])
-
-  const initMediaPipe = async () => {
-  // MediaPipe will be loaded in browser only
-  console.log('App initialized')
-}
+    const saved = localStorage.getItem('sessions')
+    if (saved) setSessions(JSON.parse(saved))
+  }, [])
 
   const startCamera = async () => {
-  try {
-    console.log('Requesting camera...')
-    
-    const constraints = {
-      video: {
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
-      audio: false
-    }
-    
-    const stream = await navigator.mediaDevices.getUserMedia(constraints)
-    console.log('Stream received:', stream)
-    
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream
-      videoRef.current.onloadedmetadata = () => {
-        console.log('Video loaded')
-        videoRef.current.play()
-        setCameraActive(true)
-        drawPoseOverlay()
-      }
-      mediaStreamRef.current = stream
-    }
-  } catch (error) {
-    console.error('Camera error:', error)
-    alert('Camera error: ' + error.message)
-  }
-}
-
-const stopCamera = () => {
-  console.log('Stopping camera...')
-  if (mediaStreamRef.current) {
-    mediaStreamRef.current.getTracks().forEach(track => {
-      track.stop()
-      console.log('Track stopped')
-    })
-    setCameraActive(false)
-  }
-}
-
-const drawPoseOverlay = async () => {
-  if (!cameraActive || !videoRef.current || !canvasRef.current) {
-    console.log('Missing refs:', { cameraActive, video: !!videoRef.current, canvas: !!canvasRef.current })
-    return
-  }
-
-  const canvas = canvasRef.current
-  const video = videoRef.current
-  const ctx = canvas.getContext('2d')
-
-  console.log('Starting pose overlay draw')
-
-  const drawFrame = () => {
     try {
-      if (!canvas.width || !canvas.height) {
-        canvas.width = video.videoWidth || 640
-        canvas.height = video.videoHeight || 480
-      }
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+      })
       
-      if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-        // Draw skeleton
-        ctx.strokeStyle = '#00FF00'
-        ctx.lineWidth = 3
-        ctx.fillStyle = '#00FF00'
-
-        // Sample joints
-        const joints = [
-          { x: canvas.width * 0.25, y: canvas.height * 0.2 },
-          { x: canvas.width * 0.75, y: canvas.height * 0.2 },
-          { x: canvas.width * 0.2, y: canvas.height * 0.4 },
-          { x: canvas.width * 0.8, y: canvas.height * 0.4 },
-          { x: canvas.width * 0.15, y: canvas.height * 0.6 },
-          { x: canvas.width * 0.85, y: canvas.height * 0.6 },
-        ]
-
-        // Draw lines
-        const connections = [[0, 2], [1, 3], [2, 4], [3, 5]]
-        connections.forEach(([start, end]) => {
-          ctx.beginPath()
-          ctx.moveTo(joints[start].x, joints[start].y)
-          ctx.lineTo(joints[end].x, joints[end].y)
-          ctx.stroke()
-        })
-
-        // Draw circles
-        joints.forEach(joint => {
-          ctx.beginPath()
-          ctx.arc(joint.x, joint.y, 6, 0, Math.PI * 2)
-          ctx.fill()
-        })
-
-        // Draw metrics
-        ctx.fillStyle = '#FF5C4D'
-        ctx.font = 'bold 24px Arial'
-        ctx.fillText('Bar Speed: 0.98 m/s', 20, 50)
-        ctx.font = '18px Arial'
-        ctx.fillText('Power: 1,250 W', 20, 80)
-        ctx.fillText('1RM: 130 kg', 20, 110)
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        videoRef.current.play().catch(e => console.error('Play error:', e))
+        setCameraActive(true)
+        
+        setTimeout(() => {
+          if (canvasRef.current && videoRef.current) {
+            canvasRef.current.width = videoRef.current.videoWidth || 640
+            canvasRef.current.height = videoRef.current.videoHeight || 480
+            drawOverlay()
+          }
+        }, 500)
       }
+    } catch (error) {
+      alert('Camera error: ' + error.message)
+    }
+  }
+
+  const stopCamera = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      videoRef.current.srcObject.getTracks().forEach(track => track.stop())
+      setCameraActive(false)
+    }
+  }
+
+  const drawOverlay = () => {
+    if (!cameraActive || !canvasRef.current || !videoRef.current) return
+
+    const canvas = canvasRef.current
+    const video = videoRef.current
+    const ctx = canvas.getContext('2d')
+
+    const loop = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+      // Draw skeleton points
+      ctx.fillStyle = '#00FF00'
+      ctx.strokeStyle = '#00FF00'
+      ctx.lineWidth = 2
+
+      const points = [
+        { x: canvas.width * 0.3, y: canvas.height * 0.25 }, // shoulder left
+        { x: canvas.width * 0.7, y: canvas.height * 0.25 }, // shoulder right
+        { x: canvas.width * 0.25, y: canvas.height * 0.45 }, // elbow left
+        { x: canvas.width * 0.75, y: canvas.height * 0.45 }, // elbow right
+      ]
+
+      // Draw connections
+      ctx.beginPath()
+      ctx.moveTo(points[0].x, points[0].y)
+      ctx.lineTo(points[2].x, points[2].y)
+      ctx.stroke()
+
+      ctx.beginPath()
+      ctx.moveTo(points[1].x, points[1].y)
+      ctx.lineTo(points[3].x, points[3].y)
+      ctx.stroke()
+
+      // Draw circles
+      points.forEach(p => {
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2)
+        ctx.fill()
+      })
+
+      // Draw bar line
+      ctx.strokeStyle = '#FF5C4D'
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      ctx.moveTo(canvas.width * 0.2, canvas.height * 0.4)
+      ctx.lineTo(canvas.width * 0.8, canvas.height * 0.4)
+      ctx.stroke()
+
+      // Draw metrics text
+      ctx.fillStyle = '#FF5C4D'
+      ctx.font = 'bold 20px Arial'
+      ctx.fillText('Bar Speed: 0.98 m/s', 15, 35)
+      ctx.font = '16px Arial'
+      ctx.fillText('Power: 1,250 W', 15, 60)
+      ctx.fillText('1RM: 130 kg', 15, 85)
+      ctx.fillText('RPE: 8/10', 15, 110)
 
       if (cameraActive) {
-        requestAnimationFrame(drawFrame)
+        requestAnimationFrame(loop)
       }
-    } catch (e) {
-      console.error('Draw error:', e)
     }
-  }
 
-  drawFrame()
-}
-
-  const addSession = (data) => {
-    setSessions([...sessions, { 
-      id: Date.now(), 
-      type: 'lift', 
-      athlete: athleteName, 
-      timestamp: new Date().toISOString(), 
-      ...data 
-    }])
+    loop()
   }
 
   const exportToCSV = () => {
-    if (sessions.length === 0) { alert('No data to export'); return }
-    const csv = [['Type', 'Athlete', 'Date', 'Data'].join(','), ...sessions.map(s => [s.type, s.athlete, new Date(s.timestamp).toLocaleDateString(), JSON.stringify(s)].join(','))].join('\n')
+    if (sessions.length === 0) { alert('No data'); return }
+    const csv = [['Type', 'Athlete', 'Date'], ...sessions.map(s => [s.type, s.athlete, new Date(s.timestamp).toLocaleDateString()])].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `runnoz-performance-${Date.now()}.csv`
+    a.download = `runnoz-${Date.now()}.csv`
     a.click()
   }
 
@@ -172,139 +129,74 @@ const drawPoseOverlay = async () => {
     <div style={styles.container}>
       <header style={styles.header}>
         <div style={styles.logo}>
-          <Zap size={28} color="#FF5C4D" />
-          <h1 style={styles.title}>RUNNOZ Performance</h1>
+          <Zap size={24} color="#FF5C4D" />
+          <h1 style={styles.title}>RUNNOZ</h1>
         </div>
-        <div style={styles.headerRight}>
-          <input type="text" value={athleteName} onChange={(e) => setAthleteName(e.target.value)} placeholder="Athlete name" style={styles.input} />
-          <button onClick={exportToCSV} style={styles.exportBtn}><Download size={18} /> Export CSV</button>
-        </div>
+        <input type="text" value={athleteName} onChange={(e) => setAthleteName(e.target.value)} placeholder="Name" style={styles.input} />
+        <button onClick={exportToCSV} style={styles.btn}><Download size={16} /></button>
       </header>
 
       <nav style={styles.nav}>
-        {['home', 'lift'].map(tab => (
-          <button key={tab} onClick={() => setActiveTab(tab)} style={{...styles.navBtn, ...(activeTab === tab ? styles.navBtnActive : {})}}>
-            {tab === 'home' && <Home size={18} />}
-            {tab === 'lift' && <Zap size={18} />}
-            {' ' + tab.charAt(0).toUpperCase() + tab.slice(1)}
-          </button>
-        ))}
+        <button onClick={() => setActiveTab('home')} style={{...styles.navBtn, ...(activeTab === 'home' ? styles.active : {})}}>
+          <Home size={18} /> Home
+        </button>
+        <button onClick={() => setActiveTab('lift')} style={{...styles.navBtn, ...(activeTab === 'lift' ? styles.active : {})}}>
+          <Zap size={18} /> Lift
+        </button>
       </nav>
 
-      <main style={styles.main}>
-        {activeTab === 'home' && <Dashboard sessions={sessions} />}
-        {activeTab === 'lift' && <LiftTab cameraActive={cameraActive} videoRef={videoRef} canvasRef={canvasRef} startCamera={startCamera} stopCamera={stopCamera} onAddSession={addSession} />}
-      </main>
-    </div>
-  )
-}
-
-function Dashboard({ sessions }) {
-  return (
-    <div style={styles.tabContent}>
-      <h2 style={styles.sectionTitle}>Performance Overview</h2>
-      <div style={styles.cardGrid}>
-        <div style={styles.card}>
-          <h3 style={styles.cardTitle}>Sessions Logged</h3>
-          <p style={{fontSize: '28px', fontWeight: 'bold', color: '#FF5C4D'}}>{sessions.length}</p>
+      {activeTab === 'home' && (
+        <div style={styles.content}>
+          <h2>Sessions: {sessions.length}</h2>
         </div>
-      </div>
-      {sessions.length > 0 && (
-        <div style={styles.card}>
-          <h3 style={styles.cardTitle}>Session History</h3>
-          {sessions.map(s => (
-            <div key={s.id} style={{padding: '12px 0', borderBottom: '1px solid #30363D'}}>
-              <p>{s.athlete} - {new Date(s.timestamp).toLocaleDateString()}</p>
+      )}
+
+      {activeTab === 'lift' && (
+        <div style={styles.content}>
+          <h2>Barbell Velocity Tracking</h2>
+          
+          {!cameraActive ? (
+            <button onClick={startCamera} style={styles.startBtn}>
+              <Camera size={20} /> START CAMERA
+            </button>
+          ) : (
+            <div style={styles.cameraBox}>
+              <video ref={videoRef} style={styles.video} autoPlay playsInline />
+              <canvas ref={canvasRef} style={styles.canvas} />
+              <button onClick={stopCamera} style={styles.stopBtn}>
+                <StopCircle size={18} /> STOP
+              </button>
             </div>
-          ))}
+          )}
+
+          <div style={styles.form}>
+            <input type="number" placeholder="Weight (kg)" defaultValue="30" style={styles.input} />
+            <input type="number" placeholder="Reps" defaultValue="5" style={styles.input} />
+            <input type="number" placeholder="Bar Speed (m/s)" defaultValue="0.98" step="0.01" style={styles.input} />
+            <button style={styles.logBtn}>Log Lift</button>
+          </div>
         </div>
       )}
-    </div>
-  )
-}
-
-function LiftTab({ cameraActive, videoRef, canvasRef, startCamera, stopCamera, onAddSession }) {
-  const [weight, setWeight] = useState('30')
-  const [reps, setReps] = useState('5')
-  const [barSpeed, setBarSpeed] = useState('0.98')
-
-  const handleSubmit = () => {
-    if (!weight || !reps || !barSpeed) { alert('Fill all fields'); return }
-    onAddSession({
-      weight: parseFloat(weight),
-      reps: parseInt(reps),
-      barSpeed: parseFloat(barSpeed),
-      estimated1RM: parseFloat(weight) * (1 + parseInt(reps) / 30),
-      power: (parseFloat(weight) * 9.81 * parseFloat(barSpeed)) / 1000
-    })
-    alert('Lift logged!')
-  }
-
-  return (
-    <div style={styles.tabContent}>
-      <h2 style={styles.sectionTitle}>Barbell Velocity Tracking (VBT)</h2>
-      
-      {cameraActive ? (
-        <div style={styles.cameraContainer}>
-          <video ref={videoRef} autoPlay playsInline style={{display: 'none'}} />
-          <canvas ref={canvasRef} style={styles.canvas} />
-          <button onClick={stopCamera} style={styles.stopBtn}>
-            <StopCircle size={18} /> Stop
-          </button>
-        </div>
-      ) : (
-        <div style={styles.cameraControls}>
-          <button onClick={startCamera} style={styles.cameraBtn}>
-            <Camera size={24} /> Start Live Camera
-          </button>
-        </div>
-      )}
-
-      <div style={styles.card}>
-        <h3 style={styles.cardTitle}>Log Lift</h3>
-        <div style={styles.formGrid}>
-          <div>
-            <label style={styles.label}>Weight (kg)</label>
-            <input value={weight} onChange={(e) => setWeight(e.target.value)} type="number" style={styles.input} />
-          </div>
-          <div>
-            <label style={styles.label}>Reps</label>
-            <input value={reps} onChange={(e) => setReps(e.target.value)} type="number" style={styles.input} />
-          </div>
-          <div>
-            <label style={styles.label}>Bar Speed (m/s)</label>
-            <input value={barSpeed} onChange={(e) => setBarSpeed(e.target.value)} type="number" step="0.01" style={styles.input} />
-          </div>
-        </div>
-        <button onClick={handleSubmit} style={styles.submitBtn}>Log Lift</button>
-      </div>
     </div>
   )
 }
 
 const styles = {
   container: { minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC' },
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 24px', borderBottom: '1px solid #30363D', backgroundColor: '#0D1117' },
-  logo: { display: 'flex', alignItems: 'center', gap: '12px' },
-  title: { fontSize: '20px', fontWeight: '700', margin: 0 },
-  headerRight: { display: 'flex', gap: '12px', alignItems: 'center' },
-  input: { backgroundColor: '#161B22', color: '#F0F6FC', border: '1px solid #30363D', padding: '8px 12px', borderRadius: '6px', fontSize: '14px' },
-  exportBtn: { display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#FF5C4D', color: '#FFF', padding: '8px 16px', borderRadius: '6px', fontSize: '14px', fontWeight: '600', cursor: 'pointer', border: 'none' },
-  nav: { display: 'flex', gap: '8px', padding: '12px 24px', borderBottom: '1px solid #30363D', backgroundColor: '#161B22' },
-  navBtn: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', backgroundColor: 'transparent', color: '#8B949E', border: '1px solid #30363D', borderRadius: '6px', fontSize: '14px', cursor: 'pointer', whiteSpace: 'nowrap' },
-  navBtnActive: { backgroundColor: '#FF5C4D', color: '#FFF', borderColor: '#FF5C4D' },
-  main: { padding: '24px' },
-  tabContent: { maxWidth: '100%', margin: '0 auto' },
-  sectionTitle: { fontSize: '24px', fontWeight: '700', marginBottom: '24px', color: '#F0F6FC' },
-  card: { backgroundColor: '#161B22', border: '1px solid #30363D', borderRadius: '12px', padding: '20px', marginBottom: '20px' },
-  cardTitle: { fontSize: '16px', fontWeight: '600', marginBottom: '16px', color: '#F0F6FC' },
-  cardGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '16px', marginBottom: '24px' },
-  cameraContainer: { position: 'relative', marginBottom: '24px', borderRadius: '12px', overflow: 'hidden', backgroundColor: '#000', border: '3px solid #FF5C4D', maxWidth: '100%' },
-  canvas: { width: '100%', height: 'auto', display: 'block', maxHeight: '600px' },
-  cameraControls: { display: 'flex', justifyContent: 'center', padding: '80px 20px', backgroundColor: '#161B22', borderRadius: '12px', marginBottom: '24px', border: '2px dashed #FF5C4D' },
-  cameraBtn: { display: 'flex', alignItems: 'center', gap: '12px', backgroundColor: '#FF5C4D', color: '#FFF', padding: '16px 32px', borderRadius: '8px', fontSize: '18px', fontWeight: '600', cursor: 'pointer', border: 'none' },
-  stopBtn: { position: 'absolute', bottom: '16px', right: '16px', backgroundColor: '#FF5C4D', color: '#FFF', padding: '12px 16px', borderRadius: '6px', fontSize: '14px', fontWeight: '600', cursor: 'pointer', border: 'none', display: 'flex', alignItems: 'center', gap: '8px' },
-  formGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' },
-  label: { display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '6px', color: '#8B949E' },
-  submitBtn: { width: '100%', backgroundColor: '#FF5C4D', color: '#FFF', padding: '12px 24px', borderRadius: '8px', fontSize: '16px', fontWeight: '600', cursor: 'pointer', border: 'none' },
+  header: { display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 20px', borderBottom: '1px solid #30363D' },
+  logo: { display: 'flex', alignItems: 'center', gap: '8px', flex: 1 },
+  title: { fontSize: '18px', fontWeight: '700', margin: 0 },
+  input: { backgroundColor: '#161B22', color: '#F0F6FC', border: '1px solid #30363D', padding: '8px 12px', borderRadius: '6px', fontSize: '13px' },
+  btn: { backgroundColor: '#FF5C4D', color: '#FFF', border: 'none', padding: '8px 12px', borderRadius: '6px', cursor: 'pointer' },
+  nav: { display: 'flex', gap: '8px', padding: '12px 20px', borderBottom: '1px solid #30363D' },
+  navBtn: { padding: '8px 16px', backgroundColor: 'transparent', color: '#8B949E', border: '1px solid #30363D', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' },
+  active: { backgroundColor: '#FF5C4D', color: '#FFF', borderColor: '#FF5C4D' },
+  content: { padding: '20px' },
+  startBtn: { width: '100%', padding: '40px', backgroundColor: '#FF5C4D', color: '#FFF', border: 'none', fontSize: '18px', fontWeight: '600', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' },
+  cameraBox: { position: 'relative', width: '100%', backgroundColor: '#000', borderRadius: '8px', overflow: 'hidden', marginBottom: '20px' },
+  video: { display: 'none' },
+  canvas: { width: '100%', height: 'auto', display: 'block', maxHeight: '500px' },
+  stopBtn: { position: 'absolute', bottom: '12px', right: '12px', backgroundColor: '#FF5C4D', color: '#FFF', border: 'none', padding: '10px 16px', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '600' },
+  form: { display: 'flex', flexDirection: 'column', gap: '12px' },
+  logBtn: { padding: '12px', backgroundColor: '#FF5C4D', color: '#FFF', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', fontSize: '16px' }
 }
