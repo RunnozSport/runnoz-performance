@@ -30,63 +30,89 @@ export default function Page() {
 }
 
   const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: 'environment',
-          width: { ideal: 1280 }, 
-          height: { ideal: 720 } 
-        }
-      })
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        mediaStreamRef.current = stream
+  try {
+    console.log('Requesting camera...')
+    
+    const constraints = {
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    }
+    
+    const stream = await navigator.mediaDevices.getUserMedia(constraints)
+    console.log('Stream received:', stream)
+    
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream
+      videoRef.current.onloadedmetadata = () => {
+        console.log('Video loaded')
+        videoRef.current.play()
         setCameraActive(true)
         drawPoseOverlay()
       }
-    } catch (error) {
-      alert('Camera access denied')
+      mediaStreamRef.current = stream
     }
+  } catch (error) {
+    console.error('Camera error:', error)
+    alert('Camera error: ' + error.message)
+  }
+}
+
+const stopCamera = () => {
+  console.log('Stopping camera...')
+  if (mediaStreamRef.current) {
+    mediaStreamRef.current.getTracks().forEach(track => {
+      track.stop()
+      console.log('Track stopped')
+    })
+    setCameraActive(false)
+  }
+}
+
+const drawPoseOverlay = async () => {
+  if (!cameraActive || !videoRef.current || !canvasRef.current) {
+    console.log('Missing refs:', { cameraActive, video: !!videoRef.current, canvas: !!canvasRef.current })
+    return
   }
 
-  const stopCamera = () => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop())
-      setCameraActive(false)
-    }
-  }
+  const canvas = canvasRef.current
+  const video = videoRef.current
+  const ctx = canvas.getContext('2d')
 
-  const drawPoseOverlay = async () => {
-    if (!cameraActive || !videoRef.current || !canvasRef.current) return
+  console.log('Starting pose overlay draw')
 
-    const canvas = canvasRef.current
-    const video = videoRef.current
-    const ctx = canvas.getContext('2d')
+  const drawFrame = () => {
+    try {
+      if (!canvas.width || !canvas.height) {
+        canvas.width = video.videoWidth || 640
+        canvas.height = video.videoHeight || 480
+      }
 
-    canvas.width = video.videoWidth || 640
-    canvas.height = video.videoHeight || 480
-
-    const drawFrame = async () => {
-      try {
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
-        // Draw skeleton (demo points - replace with real MediaPipe pose)
-        const joints = [
-          { name: 'shoulder_left', x: canvas.width * 0.25, y: canvas.height * 0.2 },
-          { name: 'shoulder_right', x: canvas.width * 0.75, y: canvas.height * 0.2 },
-          { name: 'elbow_left', x: canvas.width * 0.2, y: canvas.height * 0.4 },
-          { name: 'elbow_right', x: canvas.width * 0.8, y: canvas.height * 0.4 },
-          { name: 'wrist_left', x: canvas.width * 0.15, y: canvas.height * 0.6 },
-          { name: 'wrist_right', x: canvas.width * 0.85, y: canvas.height * 0.6 },
-        ]
-
-        // Draw lines (skeleton)
+        // Draw skeleton
         ctx.strokeStyle = '#00FF00'
         ctx.lineWidth = 3
-        const connections = [
-          [0, 2], [1, 3], [2, 4], [3, 5]
+        ctx.fillStyle = '#00FF00'
+
+        // Sample joints
+        const joints = [
+          { x: canvas.width * 0.25, y: canvas.height * 0.2 },
+          { x: canvas.width * 0.75, y: canvas.height * 0.2 },
+          { x: canvas.width * 0.2, y: canvas.height * 0.4 },
+          { x: canvas.width * 0.8, y: canvas.height * 0.4 },
+          { x: canvas.width * 0.15, y: canvas.height * 0.6 },
+          { x: canvas.width * 0.85, y: canvas.height * 0.6 },
         ]
+
+        // Draw lines
+        const connections = [[0, 2], [1, 3], [2, 4], [3, 5]]
         connections.forEach(([start, end]) => {
           ctx.beginPath()
           ctx.moveTo(joints[start].x, joints[start].y)
@@ -94,46 +120,32 @@ export default function Page() {
           ctx.stroke()
         })
 
-        // Draw circles at joints
-        ctx.fillStyle = '#00FF00'
+        // Draw circles
         joints.forEach(joint => {
           ctx.beginPath()
           ctx.arc(joint.x, joint.y, 6, 0, Math.PI * 2)
           ctx.fill()
         })
 
-        // Draw bar path (demo)
-        ctx.strokeStyle = '#FF5C4D'
-        ctx.lineWidth = 4
-        ctx.beginPath()
-        ctx.moveTo(canvas.width * 0.2, canvas.height * 0.35)
-        ctx.lineTo(canvas.width * 0.8, canvas.height * 0.35)
-        ctx.stroke()
-
-        // Draw metrics overlay
+        // Draw metrics
         ctx.fillStyle = '#FF5C4D'
         ctx.font = 'bold 24px Arial'
         ctx.fillText('Bar Speed: 0.98 m/s', 20, 50)
         ctx.font = '18px Arial'
         ctx.fillText('Power: 1,250 W', 20, 80)
         ctx.fillText('1RM: 130 kg', 20, 110)
-        ctx.fillText('RPE: 8/10', 20, 140)
-
-        // Draw weight indicator (left side)
-        ctx.fillStyle = '#FFF'
-        ctx.font = 'bold 16px Arial'
-        ctx.fillText('30kg 1/3', 20, canvas.height - 20)
-
-        if (cameraActive) {
-          requestAnimationFrame(drawFrame)
-        }
-      } catch (e) {
-        console.error('Draw error:', e)
       }
-    }
 
-    drawFrame()
+      if (cameraActive) {
+        requestAnimationFrame(drawFrame)
+      }
+    } catch (e) {
+      console.error('Draw error:', e)
+    }
   }
+
+  drawFrame()
+}
 
   const addSession = (data) => {
     setSessions([...sessions, { 
