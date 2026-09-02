@@ -6,71 +6,57 @@ import { Zap, Home, Camera, StopCircle } from 'lucide-react'
 export default function Page() {
   const [activeTab, setActiveTab] = useState('lift')
   const [cameraActive, setCameraActive] = useState(false)
+  const [poseLoaded, setPoseLoaded] = useState(false)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const poseRef = useRef(null)
+  const animationRef = useRef(null)
 
-  // Load MediaPipe Pose
+  // Load MediaPipe at runtime
   useEffect(() => {
+    if (typeof window === 'undefined') return
+
     const loadMediaPipe = async () => {
-      const { Pose, POSE_CONNECTIONS } = await import(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469629'
-      )
-      const { drawConnectors, drawLandmarks } = await import(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.5.1675469629'
-      )
-      
-      poseRef.current = {
-        Pose,
-        POSE_CONNECTIONS,
-        drawConnectors,
-        drawLandmarks
+      try {
+        // Load scripts dynamically
+        const script1 = document.createElement('script')
+        script1.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469629/pose.min.js'
+        document.head.appendChild(script1)
+
+        script1.onload = () => {
+          if (window.Pose) {
+            setPoseLoaded(true)
+            console.log('MediaPipe Pose loaded!')
+          }
+        }
+      } catch (err) {
+        console.error('MediaPipe load error:', err)
       }
     }
-    
-    loadMediaPipe().catch(err => console.error('MediaPipe load error:', err))
+
+    loadMediaPipe()
   }, [])
 
-  const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false
-      })
-      
-      videoRef.current.srcObject = stream
-      setCameraActive(true)
-      
-      // Start pose detection
-      setTimeout(() => {
-        startPoseDetection()
-      }, 500)
-    } catch (err) {
-      alert('Camera Error: ' + err.message)
-    }
-  }
-
   const startPoseDetection = async () => {
-    if (!poseRef.current) {
-      console.log('MediaPipe not loaded yet')
+    if (!poseLoaded || !window.Pose) {
+      alert('MediaPipe still loading... please wait')
       return
     }
 
-    const { Pose, POSE_CONNECTIONS, drawConnectors, drawLandmarks } = poseRef.current
-    const pose = new Pose({
+    const pose = new window.Pose({
       locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469629/${file}`
     })
 
     pose.setOptions({
       modelComplexity: 1,
       smoothLandmarks: true,
-      enableSegmentation: false,
-      smoothSegmentation: false,
       minDetectionConfidence: 0.5,
       minTrackingConfidence: 0.5
     })
 
-    const processFrame = async (results) => {
+    poseRef.current = pose
+
+    const onResults = (results) => {
       if (!cameraActive) return
 
       const canvas = canvasRef.current
@@ -78,39 +64,42 @@ export default function Page() {
       if (!canvas || !video) return
 
       const ctx = canvas.getContext('2d')
-      
-      // Set canvas size
+
       if (canvas.width === 0) {
         canvas.width = video.videoWidth
         canvas.height = video.videoHeight
       }
 
-      // Draw video
+      // Draw video frame
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
-      // Draw pose
+      // Draw pose landmarks
       if (results.poseLandmarks && results.poseLandmarks.length > 0) {
         // Draw skeleton connections
         ctx.strokeStyle = '#00FF00'
         ctx.lineWidth = 2
         ctx.globalAlpha = 0.8
 
-        // Draw connections (bones)
         const connections = [
-          [11, 13], [13, 15], // Right arm
-          [12, 14], [14, 16], // Left arm
-          [11, 12], // Shoulders
-          [11, 23], [12, 24], // Torso to hips
-          [23, 24], // Hips
-          [23, 25], [25, 27], // Right leg
-          [24, 26], [26, 28], // Left leg
+          [11, 13], [13, 15],
+          [12, 14], [14, 16],
+          [11, 12],
+          [11, 23], [12, 24],
+          [23, 24],
+          [23, 25], [25, 27],
+          [24, 26], [26, 28],
         ]
 
         connections.forEach(([start, end]) => {
           const startLandmark = results.poseLandmarks[start]
           const endLandmark = results.poseLandmarks[end]
-          
-          if (startLandmark && endLandmark && startLandmark.visibility > 0.5 && endLandmark.visibility > 0.5) {
+
+          if (
+            startLandmark &&
+            endLandmark &&
+            startLandmark.visibility > 0.5 &&
+            endLandmark.visibility > 0.5
+          ) {
             ctx.beginPath()
             ctx.moveTo(startLandmark.x * canvas.width, startLandmark.y * canvas.height)
             ctx.lineTo(endLandmark.x * canvas.width, endLandmark.y * canvas.height)
@@ -118,26 +107,20 @@ export default function Page() {
           }
         })
 
-        // Draw joints (circles)
+        // Draw joints
         ctx.fillStyle = '#00FF00'
-        results.poseLandmarks.forEach(landmark => {
+        results.poseLandmarks.forEach((landmark) => {
           if (landmark.visibility > 0.5) {
             ctx.beginPath()
-            ctx.arc(
-              landmark.x * canvas.width,
-              landmark.y * canvas.height,
-              5,
-              0,
-              Math.PI * 2
-            )
+            ctx.arc(landmark.x * canvas.width, landmark.y * canvas.height, 5, 0, Math.PI * 2)
             ctx.fill()
           }
         })
 
-        // Draw bar path (line between hands)
+        // Draw bar line (between wrists)
         const leftWrist = results.poseLandmarks[16]
         const rightWrist = results.poseLandmarks[15]
-        
+
         if (leftWrist && rightWrist && leftWrist.visibility > 0.5 && rightWrist.visibility > 0.5) {
           ctx.strokeStyle = '#FF5C4D'
           ctx.lineWidth = 4
@@ -150,7 +133,7 @@ export default function Page() {
         ctx.globalAlpha = 1.0
       }
 
-      // Draw metrics overlay
+      // Draw metrics
       ctx.fillStyle = '#FF5C4D'
       ctx.font = 'bold 20px Arial'
       ctx.fillText('Bar Speed: 0.98 m/s', 20, 40)
@@ -158,46 +141,52 @@ export default function Page() {
       ctx.fillText('Power: 1,250 W', 20, 65)
       ctx.fillText('1RM Est: 130 kg', 20, 90)
       ctx.fillText('RPE: 8/10', 20, 115)
+    }
 
-      if (cameraActive) {
-        await pose.send({ image: video })
+    pose.onResults(onResults)
+
+    const detect = async () => {
+      if (cameraActive && videoRef.current && poseRef.current) {
+        await poseRef.current.send({ image: videoRef.current })
+        animationRef.current = requestAnimationFrame(detect)
       }
     }
 
-    pose.onResults(processFrame)
+    detect()
+  }
 
-    const animate = async () => {
-      if (cameraActive && videoRef.current) {
-        await pose.send({ image: videoRef.current })
-        requestAnimationFrame(animate)
-      }
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false
+      })
+
+      videoRef.current.srcObject = stream
+      setCameraActive(true)
+
+      setTimeout(() => {
+        startPoseDetection()
+      }, 500)
+    } catch (err) {
+      alert('Camera Error: ' + err.message)
     }
-
-    animate()
   }
 
   const stopCamera = () => {
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current)
+    }
     if (videoRef.current?.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(t => t.stop())
+      videoRef.current.srcObject.getTracks().forEach((t) => t.stop())
     }
     setCameraActive(false)
   }
 
   return (
     <div style={styles.container}>
-      {/* VIDEO & CANVAS */}
-      <video 
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        style={{ display: 'none' }}
-      />
-      
-      <canvas 
-        ref={canvasRef}
-        style={{ display: cameraActive ? 'block' : 'none', width: '100%', maxHeight: '600px' }}
-      />
+      <video ref={videoRef} autoPlay playsInline muted style={{ display: 'none' }} />
+      <canvas ref={canvasRef} style={{ display: cameraActive ? 'block' : 'none', width: '100%', maxHeight: '600px' }} />
 
       <div style={styles.header}>
         <Zap size={20} color="#FF5C4D" />
@@ -205,21 +194,21 @@ export default function Page() {
       </div>
 
       <div style={styles.tabs}>
-        <button onClick={() => setActiveTab('home')} style={{...styles.tab, ...(activeTab === 'home' && styles.tabActive)}}>
+        <button onClick={() => setActiveTab('home')} style={{ ...styles.tab, ...(activeTab === 'home' && styles.tabActive) }}>
           <Home size={16} /> Home
         </button>
-        <button onClick={() => setActiveTab('lift')} style={{...styles.tab, ...(activeTab === 'lift' && styles.tabActive)}}>
+        <button onClick={() => setActiveTab('lift')} style={{ ...styles.tab, ...(activeTab === 'lift' && styles.tabActive) }}>
           <Camera size={16} /> Lift
         </button>
       </div>
 
       <div style={styles.content}>
-        <h2>Barbell Velocity Tracking (AI Pose Detected)</h2>
+        <h2>Barbell Velocity Tracking {poseLoaded ? '✅' : '⏳'}</h2>
 
         {!cameraActive && (
-          <button onClick={startCamera} style={styles.startBtn}>
+          <button onClick={startCamera} disabled={!poseLoaded} style={{ ...styles.startBtn, opacity: poseLoaded ? 1 : 0.5 }}>
             <Camera size={32} />
-            START REAR CAMERA
+            {poseLoaded ? 'START REAR CAMERA' : 'LOADING AI...'}
           </button>
         )}
 
