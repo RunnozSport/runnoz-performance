@@ -6,7 +6,6 @@ export default function Page() {
   const [cameraActive, setCameraActive] = useState(false)
   const videoRef = useRef(null)
 
-  // Log when ref is attached
   useEffect(() => {
     console.log('Component mounted, videoRef:', videoRef.current)
   }, [])
@@ -28,7 +27,6 @@ export default function Page() {
 
       console.log('Stream received:', stream.active)
 
-      // Make absolutely sure ref exists
       if (!videoRef.current) {
         console.error('VIDEO REF IS NULL!')
         setStatus('Error: Video element not found')
@@ -38,7 +36,6 @@ export default function Page() {
       console.log('Setting srcObject...')
       videoRef.current.srcObject = stream
 
-      // Try to play immediately
       console.log('Attempting to play video...')
       videoRef.current.play()
         .then(() => {
@@ -58,7 +55,7 @@ export default function Page() {
   }
 
   const stopCamera = () => {
-    if (videoRef.current?.srcObject) {
+    if (videoRef.current && videoRef.current.srcObject) {
       videoRef.current.srcObject.getTracks().forEach(t => t.stop())
     }
     setCameraActive(false)
@@ -66,4 +63,79 @@ export default function Page() {
   }
 
   return (
-    <div style={{
+    <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC', padding: '20px' }}>
+      <h1>RUNNOZ VBT</h1>
+      <p style={{ fontSize: '16px', fontWeight: 'bold', color: '#FF5C4D' }}>Status: {status}</p>
+
+      {!cameraActive && (
+        <button
+          onClick={startCamera}
+          style={{
+            width: '100%',
+            padding: '60px 20px',
+            backgroundColor: '#FF5C4D',
+            color: '#FFF',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '18px',
+            fontWeight: '700',
+            cursor: 'pointer',
+            marginBottom: '20px'
+          }}
+        >
+          START CAMERA
+        </button>
+      )}
+
+      <div style={{
+        position: 'relative',
+        width: '100%',
+        maxWidth: '600px',
+        backgroundColor: '#000',
+        borderRadius: '8px',
+        overflow: 'hidden',
+        border: '3px solid #FF5C4D',
+        marginBottom: '20px'
+      }}>
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          style={{
+            width: '100%',
+            height: 'auto',
+            display: 'block',
+            minHeight: '300px'
+          }}
+        />
+        
+        {cameraActive && (
+          <button
+            onClick={stopCamera}
+            style={{
+              position: 'absolute',
+              bottom: '16px',
+              right: '16px',
+              padding: '10px 16px',
+              backgroundColor: '#FF5C4D',
+              color: '#FFF',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              zIndex: 10
+            }}
+          >
+            STOP
+          </button>
+        )}
+      </div>
+
+      <p style={{ fontSize: '12px', color: '#8B949E' }}>
+        Check console - look for "✅ VIDEO IS PLAYING!"
+      </p>
+    </div>
+  )
+}
