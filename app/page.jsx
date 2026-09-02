@@ -9,14 +9,13 @@ export default function Page() {
   const canvasRef = useRef(null)
   const detectorRef = useRef(null)
   const rafRef = useRef(null)
-  const frameCountRef = useRef(0)
 
   useEffect(() => {
     const loadTF = async () => {
       try {
         console.log('Loading TensorFlow...')
         const tf = await import('@tensorflow/tfjs')
-        const webgl = await import('@tensorflow/tfjs-backend-webgl')
+        await import('@tensorflow/tfjs-backend-webgl')
         const poseDetection = await import('@tensorflow-models/pose-detection')
         
         await tf.setBackend('webgl')
@@ -45,7 +44,6 @@ export default function Page() {
     }
 
     setStatus('Requesting camera...')
-    console.log('START CAMERA CLICKED')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
@@ -56,7 +54,7 @@ export default function Page() {
         videoRef.current.srcObject = stream
         
         videoRef.current.onplay = () => {
-          console.log('VIDEO PLAY EVENT FIRED')
+          console.log('VIDEO PLAYING')
           setCameraActive(true)
           setStatus('Detecting pose...')
           startPoseDetection()
@@ -69,58 +67,30 @@ export default function Page() {
   }
 
   const startPoseDetection = () => {
-    console.log('startPoseDetection called')
     const video = videoRef.current
     const canvas = canvasRef.current
     const detector = detectorRef.current
 
-    if (!video) {
-      console.error('❌ VIDEO IS NULL')
+    if (!video || !canvas || !detector) {
+      console.error('Missing elements')
       return
     }
-    if (!canvas) {
-      console.error('❌ CANVAS IS NULL')
-      return
-    }
-    if (!detector) {
-      console.error('❌ DETECTOR IS NULL')
-      return
-    }
-
-    console.log('✅ All elements ready, starting detection loop')
 
     const ctx = canvas.getContext('2d')
-    let frameCount = 0
+    canvas.width = video.videoWidth || 640
+    canvas.height = video.videoHeight || 480
+
+    console.log('Starting pose detection, canvas size:', canvas.width, 'x', canvas.height)
 
     const detect = async () => {
-      frameCount++
-      
-      if (frameCount % 10 === 0) {
-        console.log('Detection frame:', frameCount)
-      }
-
-      if (!cameraActive) {
-        console.log('Camera not active, stopping detection')
-        return
-      }
+      if (!cameraActive || !video || !detector) return
 
       try {
-        // Ensure canvas size
-        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-          canvas.width = video.videoWidth || 640
-          canvas.height = video.videoHeight || 480
-          console.log('Canvas resized to:', canvas.width, 'x', canvas.height)
-        }
+        // ONLY draw overlay on canvas, NOT the video
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-        // Draw video
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-        // Detect poses
+        // Get poses
         const poses = await detector.estimatePoses(video)
-
-        if (frameCount % 10 === 0) {
-          console.log('Poses detected:', poses.length)
-        }
 
         if (poses && poses.length > 0) {
           const keypoints = poses[0].keypoints
@@ -137,7 +107,6 @@ export default function Page() {
             [23, 25], [25, 27], [24, 26], [26, 28]
           ]
 
-          let drawn = 0
           connections.forEach(([start, end]) => {
             const startKp = keypoints[start]
             const endKp = keypoints[end]
@@ -146,13 +115,8 @@ export default function Page() {
               ctx.moveTo(startKp.x, startKp.y)
               ctx.lineTo(endKp.x, endKp.y)
               ctx.stroke()
-              drawn++
             }
           })
-
-          if (frameCount === 1) {
-            console.log('Drew skeleton connections:', drawn)
-          }
 
           // Draw joints
           keypoints.forEach((kp) => {
@@ -175,10 +139,7 @@ export default function Page() {
             ctx.moveTo(leftWrist.x, leftWrist.y)
             ctx.lineTo(rightWrist.x, rightWrist.y)
             ctx.stroke()
-
-            if (frameCount === 1) {
-              console.log('Drew red bar at wrist positions')
-            }
+            console.log('Drew red bar')
           }
         }
 
@@ -194,19 +155,13 @@ export default function Page() {
         ctx.fillText('1RM: 130kg', 20, 110)
         ctx.fillText('Reps: 5', 20, 140)
 
-        if (frameCount === 1) {
-          console.log('Drew metrics')
-          setStatus('✅ Tracking active!')
-        }
+        setStatus('✅ Tracking active!')
 
         if (cameraActive) {
           rafRef.current = requestAnimationFrame(detect)
         }
       } catch (error) {
         console.error('Detection error:', error)
-        if (frameCount === 1) {
-          console.error('Error on first frame:', error.message)
-        }
       }
     }
 
@@ -214,7 +169,6 @@ export default function Page() {
   }
 
   const stopCamera = () => {
-    console.log('Stopping camera')
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     if (videoRef.current?.srcObject) {
       videoRef.current.srcObject.getTracks().forEach(t => t.stop())
@@ -251,64 +205,3 @@ export default function Page() {
       )}
 
       <div style={{
-        position: 'relative',
-        width: '100%',
-        maxWidth: '600px',
-        backgroundColor: '#000',
-        borderRadius: '8px',
-        overflow: 'hidden',
-        border: '3px solid #FF5C4D',
-        marginBottom: '20px'
-      }}>
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          style={{
-            width: '100%',
-            height: 'auto',
-            display: 'block',
-            minHeight: '300px',
-            position: 'absolute',
-            top: 0,
-            left: 0
-          }}
-        />
-        <canvas
-          ref={canvasRef}
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            zIndex: 10
-          }}
-        />
-        
-        {cameraActive && (
-          <button
-            onClick={stopCamera}
-            style={{
-              position: 'absolute',
-              bottom: '16px',
-              right: '16px',
-              padding: '10px 16px',
-              backgroundColor: '#FF5C4D',
-              color: '#FFF',
-              border: 'none',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontSize: '14px',
-              fontWeight: 'bold',
-              zIndex: 20
-            }}
-          >
-            STOP
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
