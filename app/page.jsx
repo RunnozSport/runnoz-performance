@@ -22,13 +22,33 @@ export default function Page() {
       })
 
       console.log('Stream received:', stream)
-      setCameraActive(true)
-      setStatus('Camera active!')
 
       if (videoRef.current) {
         console.log('Setting stream to video element')
         videoRef.current.srcObject = stream
-        console.log('Stream set')
+        
+        // Wait for video to be ready
+        videoRef.current.onloadedmetadata = () => {
+          console.log('Video metadata loaded, playing...')
+          videoRef.current.play().then(() => {
+            console.log('Video is playing!')
+            setCameraActive(true)
+            setStatus('Camera active!')
+          }).catch(e => {
+            console.error('Play error:', e)
+            setStatus('Play error: ' + e.message)
+          })
+        }
+
+        // Timeout if metadata doesn't load
+        setTimeout(() => {
+          if (!cameraActive) {
+            console.log('Timeout - forcing play anyway')
+            videoRef.current.play().catch(e => console.error(e))
+            setCameraActive(true)
+            setStatus('Camera active (forced)!')
+          }
+        }, 2000)
       }
     } catch (err) {
       console.error('Camera error:', err)
@@ -37,8 +57,12 @@ export default function Page() {
   }
 
   const stopCamera = () => {
+    console.log('Stopping camera')
     if (videoRef.current?.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(t => t.stop())
+      videoRef.current.srcObject.getTracks().forEach(t => {
+        console.log('Stopping track:', t)
+        t.stop()
+      })
     }
     setCameraActive(false)
     setStatus('Stopped')
@@ -47,7 +71,7 @@ export default function Page() {
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC', padding: '20px' }}>
       <h1>RUNNOZ VBT - Camera Test</h1>
-      <p>Status: {status}</p>
+      <p style={{fontSize: '16px', fontWeight: 'bold'}}>Status: {status}</p>
 
       {cameraActive ? (
         <div>
