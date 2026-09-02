@@ -12,25 +12,43 @@ export default function Page() {
     console.log('Start button clicked')
     setStatus('requesting')
     
+    // Timeout after 10 seconds
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Camera request timeout')), 10000)
+    )
+
     try {
       console.log('Requesting camera...')
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+      
+      const cameraPromise = navigator.mediaDevices.getUserMedia({
+        video: { 
+          facingMode: 'environment'
+        },
         audio: false
       })
       
+      const stream = await Promise.race([cameraPromise, timeoutPromise])
+      
       console.log('Stream received:', stream)
+      setStatus('stream ready')
       
       if (videoRef.current) {
         videoRef.current.srcObject = stream
-        console.log('Stream set to video element')
-        setCameraActive(true)
-        setStatus('recording')
+        console.log('Stream set to video')
         
-        setTimeout(() => {
-          console.log('Starting overlay draw')
-          drawOverlay()
-        }, 500)
+        // Wait for video to be playable
+        videoRef.current.onloadedmetadata = () => {
+          console.log('Video metadata loaded')
+          videoRef.current.play().then(() => {
+            console.log('Video playing')
+            setCameraActive(true)
+            setStatus('recording')
+            drawOverlay()
+          }).catch(e => {
+            console.error('Play error:', e)
+            setStatus('error: play failed')
+          })
+        }
       }
     } catch (err) {
       console.error('Camera error:', err)
@@ -47,10 +65,8 @@ export default function Page() {
       return
     }
 
-    console.log('Drawing overlay')
     canvas.width = 640
     canvas.height = 480
-
     const ctx = canvas.getContext('2d')
 
     const draw = () => {
