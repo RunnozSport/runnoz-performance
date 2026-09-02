@@ -9,71 +9,98 @@ export default function Page() {
   const rafRef = useRef(null)
 
   const startCamera = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment' },
-      audio: false
-    })
-    videoRef.current.srcObject = stream
-    setCameraActive(true)
-    setTimeout(() => drawVBT(), 500)
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: 'environment' },
+    audio: false
+  })
+  videoRef.current.srcObject = stream
+  setCameraActive(true)
+  
+  // Wait for video to actually play before drawing
+  videoRef.current.onloadedmetadata = () => {
+    videoRef.current.play()
+    drawVBT()
   }
+}
 
-  const drawVBT = () => {
-    const canvas = canvasRef.current
-    const video = videoRef.current
-    if (!canvas || !video) return
-    const ctx = canvas.getContext('2d')
+const drawVBT = () => {
+  const canvas = canvasRef.current
+  const video = videoRef.current
+  if (!canvas || !video) return
+  
+  const ctx = canvas.getContext('2d')
+  
+  const draw = () => {
+    if (!cameraActive || !video.srcObject) return
     
-    const draw = () => {
-      if (!cameraActive) return
-      if (canvas.width === 0) {
-        canvas.width = video.videoWidth || 640
-        canvas.height = video.videoHeight || 480
-      }
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-      
-      ctx.strokeStyle = '#00FF00'
-      ctx.lineWidth = 3
-      ctx.fillStyle = '#00FF00'
-      const w = canvas.width
-      const h = canvas.height
-      
-      const pts = [{x: w*0.2, y: h*0.2}, {x: w*0.8, y: h*0.2}, {x: w*0.15, y: h*0.45}, {x: w*0.85, y: h*0.45}, {x: w*0.1, y: h*0.7}, {x: w*0.9, y: h*0.7}]
-      
-      ctx.beginPath()
-      ctx.moveTo(pts[0].x, pts[0].y)
-      ctx.lineTo(pts[2].x, pts[2].y)
-      ctx.stroke()
-      ctx.beginPath()
-      ctx.moveTo(pts[1].x, pts[1].y)
-      ctx.lineTo(pts[3].x, pts[3].y)
-      ctx.stroke()
-      
-      pts.forEach(p => {
-        ctx.beginPath()
-        ctx.arc(p.x, p.y, 6, 0, Math.PI*2)
-        ctx.fill()
-      })
-      
-      ctx.strokeStyle = '#FF5C4D'
-      ctx.lineWidth = 5
-      ctx.beginPath()
-      ctx.moveTo(pts[4].x, pts[4].y)
-      ctx.lineTo(pts[5].x, pts[5].y)
-      ctx.stroke()
-      
-      const vel = (0.85 + Math.sin(Date.now()/1000)*0.15).toFixed(2)
-      ctx.fillStyle = '#FF5C4D'
-      ctx.font = 'bold 24px Arial'
-      ctx.fillText('Speed: '+vel+' m/s', 20, 50)
-      ctx.font = '18px Arial'
-      ctx.fillText('Power: 1250 W', 20, 80)
-      ctx.fillText('1RM: 130 kg', 20, 110)
-      
-      if (cameraActive) rafRef.current = requestAnimationFrame(draw)
+    // Set canvas to video dimensions
+    if (canvas.width !== video.videoWidth) {
+      canvas.width = video.videoWidth || 640
+      canvas.height = video.videoHeight || 480
     }
-    draw()
+    
+    // Draw the video frame
+    try {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    } catch (e) {
+      console.error('Canvas draw error:', e)
+    }
+    
+    // Green skeleton
+    ctx.strokeStyle = '#00FF00'
+    ctx.lineWidth = 3
+    ctx.fillStyle = '#00FF00'
+    
+    const w = canvas.width
+    const h = canvas.height
+    const pts = [
+      {x: w*0.2, y: h*0.2}, {x: w*0.8, y: h*0.2},
+      {x: w*0.15, y: h*0.45}, {x: w*0.85, y: h*0.45},
+      {x: w*0.1, y: h*0.7}, {x: w*0.9, y: h*0.7}
+    ]
+    
+    // Draw lines
+    ctx.beginPath()
+    ctx.moveTo(pts[0].x, pts[0].y)
+    ctx.lineTo(pts[2].x, pts[2].y)
+    ctx.stroke()
+    
+    ctx.beginPath()
+    ctx.moveTo(pts[1].x, pts[1].y)
+    ctx.lineTo(pts[3].x, pts[3].y)
+    ctx.stroke()
+    
+    // Draw circles
+    pts.forEach(p => {
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, 6, 0, Math.PI*2)
+      ctx.fill()
+    })
+    
+    // Red bar
+    ctx.strokeStyle = '#FF5C4D'
+    ctx.lineWidth = 5
+    ctx.beginPath()
+    ctx.moveTo(pts[4].x, pts[4].y)
+    ctx.lineTo(pts[5].x, pts[5].y)
+    ctx.stroke()
+    
+    // Metrics
+    const vel = (0.85 + Math.sin(Date.now()/1000)*0.15).toFixed(2)
+    ctx.fillStyle = '#FF5C4D'
+    ctx.font = 'bold 24px Arial'
+    ctx.fillText('Speed: '+vel+' m/s', 20, 50)
+    ctx.font = '18px Arial'
+    ctx.fillText('Power: 1250 W', 20, 80)
+    ctx.fillText('1RM: 130 kg', 20, 110)
+    
+    if (cameraActive) {
+      rafRef.current = requestAnimationFrame(draw)
+    }
   }
+  
+  draw()
+}
 
   const stopCamera = () => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
