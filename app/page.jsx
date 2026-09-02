@@ -5,10 +5,14 @@ export default function Page() {
   const [status, setStatus] = useState('Loading TensorFlow...')
   const [cameraActive, setCameraActive] = useState(false)
   const [poseReady, setPoseReady] = useState(false)
+
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const detectorRef = useRef(null)
   const rafRef = useRef(null)
+  
+  // Use a Ref to track active state inside animation frames without closure staleness
+  const isTrackingRef = useRef(false)
 
   useEffect(() => {
     const loadTF = async () => {
@@ -33,6 +37,10 @@ export default function Page() {
       }
     }
     loadTF()
+
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    }
   }, [])
 
   const startCamera = async () => {
@@ -44,17 +52,20 @@ export default function Page() {
         audio: false
       })
 
-      videoRef.current.srcObject = stream
-      
-      videoRef.current.onloadedmetadata = () => {
-        if (canvasRef.current && videoRef.current) {
-          canvasRef.current.width = videoRef.current.videoWidth
-          canvasRef.current.height = videoRef.current.videoHeight
-        }
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
         
-        setCameraActive(true)
-        setStatus('Warming up AI...')
-        warmupDetector()
+        videoRef.current.onloadedmetadata = () => {
+          if (canvasRef.current && videoRef.current) {
+            canvasRef.current.width = videoRef.current.videoWidth
+            canvasRef.current.height = videoRef.current.videoHeight
+          }
+          
+          isTrackingRef.current = true
+          setCameraActive(true)
+          setStatus('Warming up AI...')
+          warmupDetector()
+        }
       }
     } catch (err) {
       setStatus('Camera error: ' + err.message)
@@ -63,9 +74,11 @@ export default function Page() {
 
   const warmupDetector = async () => {
     try {
-      await detectorRef.current.estimatePoses(videoRef.current)
-      setStatus('🎥 Tracking...')
-      startPoseDetection()
+      if (videoRef.current && detectorRef.current) {
+        await detectorRef.current.estimatePoses(videoRef.current)
+        setStatus('🎥 Tracking...')
+        startPoseDetection()
+      }
     } catch (error) {
       console.error('Warmup error:', error)
       setStatus('Detection error')
@@ -80,83 +93,83 @@ export default function Page() {
     if (!video || !canvas || !detector) return
 
     const ctx = canvas.getContext('2d')
-    let frameCount = 0
 
     const detect = async () => {
-      if (!cameraActive) return
-
-      frameCount++
+      // Check ref instead of state to avoid stale closure issues
+      if (!isTrackingRef.current) return
 
       try {
-        const poses = await detector.estimatePoses(video)
+        if (video.readyState >= 2) {
+          const poses = await detector.estimatePoses(video)
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
+          ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-        if (poses && poses.length > 0) {
-          const keypoints = poses[0].keypoints
+          if (poses && poses.length > 0) {
+            const keypoints = poses[0].keypoints
 
-          // Draw GREEN skeleton
-          ctx.strokeStyle = '#00FF00'
-          ctx.lineWidth = 3
-          ctx.fillStyle = '#00FF00'
-          ctx.globalAlpha = 0.9
+            // 1. Draw GREEN skeleton
+            ctx.strokeStyle = '#00FF00'
+            ctx.lineWidth = 3
+            ctx.fillStyle = '#00FF00'
+            ctx.globalAlpha = 0.9
 
-          const connections = [
-            [11, 13], [13, 15], [12, 14], [14, 16],
-            [11, 12], [11, 23], [12, 24], [23, 24],
-            [23, 25], [25, 27], [24, 26], [26, 28]
-          ]
+            const connections = [
+              [11, 13], [13, 15], [12, 14], [14, 16],
+              [11, 12], [11, 23], [12, 24], [23, 24],
+              [23, 25], [25, 27], [24, 26], [26, 28]
+            ]
 
-          connections.forEach(([start, end]) => {
-            const startKp = keypoints[start]
-            const endKp = keypoints[end]
-            if (startKp && endKp && startKp.score > 0.3 && endKp.score > 0.3) {
+            connections.forEach(([start, end]) => {
+              const startKp = keypoints[start]
+              const endKp = keypoints[end]
+              if (startKp && endKp && startKp.score > 0.3 && endKp.score > 0.3) {
+                ctx.beginPath()
+                ctx.moveTo(startKp.x, startKp.y)
+                ctx.lineTo(endKp.x, endKp.y)
+                ctx.stroke()
+              }
+            })
+
+            keypoints.forEach((kp) => {
+              if (kp && kp.score > 0.3) {
+                ctx.beginPath()
+                ctx.arc(kp.x, kp.y, 5, 0, Math.PI * 2)
+                ctx.fill()
+              }
+            })
+
+            ctx.globalAlpha = 1.0
+
+            // 2. Draw RED bar between wrists
+            const leftWrist = keypoints[15]
+            const rightWrist = keypoints[16]
+            if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
+              ctx.strokeStyle = '#FF5C4D'
+              ctx.lineWidth = 5
               ctx.beginPath()
-              ctx.moveTo(startKp.x, startKp.y)
-              ctx.lineTo(endKp.x, endKp.y)
+              ctx.moveTo(leftWrist.x, leftWrist.y)
+              ctx.lineTo(rightWrist.x, rightWrist.y)
               ctx.stroke()
             }
-          })
-
-          keypoints.forEach((kp) => {
-            if (kp && kp.score > 0.3) {
-              ctx.beginPath()
-              ctx.arc(kp.x, kp.y, 5, 0, Math.PI * 2)
-              ctx.fill()
-            }
-          })
-
-          ctx.globalAlpha = 1.0
-
-          // Draw RED bar between wrists
-          const leftWrist = keypoints[15]
-          const rightWrist = keypoints[16]
-          if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
-            ctx.strokeStyle = '#FF5C4D'
-            ctx.lineWidth = 5
-            ctx.beginPath()
-            ctx.moveTo(leftWrist.x, leftWrist.y)
-            ctx.lineTo(rightWrist.x, rightWrist.y)
-            ctx.stroke()
           }
-        }
 
-        // Draw metrics
-        ctx.fillStyle = '#FF5C4D'
-        ctx.font = 'bold 26px Arial'
-        ctx.shadowColor = '#000'
-        ctx.shadowBlur = 4
-        ctx.fillText('0.95 m/s', 20, 50)
-        ctx.font = '18px Arial'
-        ctx.fillText('1250W', 20, 80)
-        ctx.fillText('1RM: 130kg', 20, 110)
-        ctx.fillText('Reps: 5', 20, 140)
-
-        if (cameraActive) {
-          rafRef.current = requestAnimationFrame(detect)
+          // 3. Draw metrics text
+          ctx.fillStyle = '#FF5C4D'
+          ctx.font = 'bold 26px Arial'
+          ctx.shadowColor = '#000'
+          ctx.shadowBlur = 4
+          ctx.fillText('0.95 m/s', 20, 50)
+          ctx.font = '18px Arial'
+          ctx.fillText('1250W', 20, 80)
+          ctx.fillText('1RM: 130kg', 20, 110)
+          ctx.fillText('Reps: 5', 20, 140)
         }
       } catch (error) {
         console.error('Detection error:', error)
+      }
+
+      if (isTrackingRef.current) {
+        rafRef.current = requestAnimationFrame(detect)
       }
     }
 
@@ -164,10 +177,20 @@ export default function Page() {
   }
 
   const stopCamera = () => {
+    isTrackingRef.current = false
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    
     if (videoRef.current?.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(t => t.stop())
+      const stream = videoRef.current.srcObject
+      stream.getTracks().forEach(t => t.stop())
+      videoRef.current.srcObject = null
     }
+
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d')
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height)
+    }
+
     setCameraActive(false)
     setStatus('Stopped')
   }
