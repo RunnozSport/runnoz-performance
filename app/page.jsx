@@ -1,141 +1,330 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Zap, Home, Camera, StopCircle } from 'lucide-react'
+import { Zap, Home, Camera, StopCircle, Download } from 'lucide-react'
 
 export default function Page() {
   const [activeTab, setActiveTab] = useState('lift')
   const [cameraActive, setCameraActive] = useState(false)
+  const [sessions, setSessions] = useState([])
+  const [poseLoaded, setPoseLoaded] = useState(false)
+  
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
+  const poseRef = useRef(null)
   const rafRef = useRef(null)
+  const positionHistoryRef = useRef([])
+  const repCountRef = useRef(0)
+  const isLiftingRef = useRef(false)
+
+  // Load MediaPipe Pose at runtime
+  useEffect(() => {
+    const loadMediaPipe = async () => {
+      try {
+        // Create script for Pose library
+        const poseScript = document.createElement('script')
+        poseScript.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469629/pose.min.js'
+        poseScript.async = true
+
+        const drawingScript = document.createElement('script')
+        drawingScript.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.5.1675469629/drawing_utils.min.js'
+        drawingScript.async = true
+
+        document.head.appendChild(poseScript)
+        document.head.appendChild(drawingScript)
+
+        poseScript.onload = () => {
+          console.log('MediaPipe Pose loaded!')
+          setPoseLoaded(true)
+        }
+      } catch (err) {
+        console.error('Failed to load MediaPipe:', err)
+      }
+    }
+
+    loadMediaPipe()
+  }, [])
+
+  const calculateVelocity = (positions) => {
+    if (positions.length < 2) return 0
+
+    const recent = positions.slice(-10) // Last 10 frames
+    if (recent.length < 2) return 0
+
+    let totalDistance = 0
+    for (let i = 1; i < recent.length; i++) {
+      const p1 = recent[i - 1]
+      const p2 = recent[i]
+      const distance = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2)
+      totalDistance += distance
+    }
+
+    // Approximate velocity (pixels to m/s conversion ~0.001)
+    const velocity = totalDistance * 0.001
+    return Math.min(velocity, 2.5) // Cap at 2.5 m/s
+  }
+
+  const detectRepetition = (wristY) => {
+    const threshold = 0.15 // Movement threshold
+    
+    if (!isLiftingRef.current && wristY > threshold) {
+      isLiftingRef.current = true
+    } else if (isLiftingRef.current && wristY < -threshold) {
+      repCountRef.current++
+      isLiftingRef.current = false
+    }
+  }
 
   const startCamera = async () => {
     try {
+      if (!poseLoaded) {
+        alert('AI is still loading... please wait')
+        return
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
         audio: false
       })
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        setCameraActive(true)
+      videoRef.current.srcObject = stream
+      setCameraActive(true)
+      repCountRef.current = 0
+      positionHistoryRef.current = []
 
-        // Wait for video to be ready
-        videoRef.current.onplaying = () => {
-          if (canvasRef.current) {
-            canvasRef.current.width = videoRef.current.videoWidth
-            canvasRef.current.height = videoRef.current.videoHeight
-            drawLoop()
-          }
-        }
-      }
+      setTimeout(() => initPoseDetection(), 500)
     } catch (err) {
       alert('Camera Error: ' + err.message)
     }
   }
 
-  const drawLoop = () => {
-    const canvas = canvasRef.current
-    const video = videoRef.current
-    if (!canvas || !video || !cameraActive) return
-
-    const ctx = canvas.getContext('2d')
-
-    // Draw video to canvas
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-    // Draw skeleton (green)
-    ctx.strokeStyle = '#00FF00'
-    ctx.lineWidth = 3
-    ctx.fillStyle = '#00FF00'
-
-    const w = canvas.width
-    const h = canvas.height
-
-    // Skeleton joints
-    const joints = [
-      { x: w * 0.2, y: h * 0.25 },  // 0: left shoulder
-      { x: w * 0.8, y: h * 0.25 },  // 1: right shoulder
-      { x: w * 0.15, y: h * 0.45 }, // 2: left elbow
-      { x: w * 0.85, y: h * 0.45 }, // 3: right elbow
-      { x: w * 0.1, y: h * 0.65 },  // 4: left wrist
-      { x: w * 0.9, y: h * 0.65 },  // 5: right wrist
-      { x: w * 0.5, y: h * 0.35 },  // 6: chest
-      { x: w * 0.5, y: h * 0.75 },  // 7: pelvis
-    ]
-
-    // Draw connections (bones)
-    const connections = [
-      [0, 2], [1, 3],  // shoulders to elbows
-      [2, 4], [3, 5],  // elbows to wrists
-      [0, 1],          // shoulders
-      [0, 6], [1, 6],  // shoulders to chest
-      [6, 7],          // chest to pelvis
-    ]
-
-    connections.forEach(([start, end]) => {
-      ctx.beginPath()
-      ctx.moveTo(joints[start].x, joints[start].y)
-      ctx.lineTo(joints[end].x, joints[end].y)
-      ctx.stroke()
-    })
-
-    // Draw circles (joints)
-    joints.forEach(joint => {
-      ctx.beginPath()
-      ctx.arc(joint.x, joint.y, 7, 0, Math.PI * 2)
-      ctx.fill()
-    })
-
-    // Draw bar (red line between wrists)
-    ctx.strokeStyle = '#FF5C4D'
-    ctx.lineWidth = 6
-    ctx.beginPath()
-    ctx.moveTo(joints[4].x, joints[4].y)
-    ctx.lineTo(joints[5].x, joints[5].y)
-    ctx.stroke()
-
-    // Draw metrics text
-    ctx.fillStyle = '#FF5C4D'
-    ctx.font = 'bold 26px Arial'
-    ctx.shadowColor = '#000'
-    ctx.shadowBlur = 4
-
-    ctx.fillText('0.98 m/s', 20, 50)
-    
-    ctx.font = '18px Arial'
-    ctx.fillText('Power: 1,250 W', 20, 80)
-    ctx.fillText('1RM: 130 kg', 20, 110)
-    ctx.fillText('RPE: 8/10', 20, 140)
-
-    if (cameraActive) {
-      rafRef.current = requestAnimationFrame(drawLoop)
+  const initPoseDetection = async () => {
+    if (!window.Pose) {
+      console.error('Pose not loaded')
+      return
     }
+
+    const pose = new window.Pose({
+      locateFile: (file) =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469629/${file}`
+    })
+
+    pose.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    })
+
+    poseRef.current = pose
+    let frameCount = 0
+    let lastVelocity = 0
+    let lastBarSpeed = 0
+
+    const onResults = (results) => {
+      if (!cameraActive) return
+
+      const canvas = canvasRef.current
+      const video = videoRef.current
+      if (!canvas || !video) return
+
+      const ctx = canvas.getContext('2d')
+
+      if (canvas.width === 0) {
+        canvas.width = video.videoWidth
+        canvas.height = video.videoHeight
+      }
+
+      // Draw video
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+      // Draw pose landmarks if detected
+      if (results.poseLandmarks && results.poseLandmarks.length > 0) {
+        // Get wrist positions (landmarks 15 and 16)
+        const leftWrist = results.poseLandmarks[16]
+        const rightWrist = results.poseLandmarks[15]
+
+        if (leftWrist && rightWrist && leftWrist.visibility > 0.3 && rightWrist.visibility > 0.3) {
+          // Track position history
+          const wristPosition = {
+            x: (leftWrist.x + rightWrist.x) / 2,
+            y: (leftWrist.y + rightWrist.y) / 2,
+            z: (leftWrist.z + rightWrist.z) / 2
+          }
+
+          positionHistoryRef.current.push(wristPosition)
+          if (positionHistoryRef.current.length > 30) {
+            positionHistoryRef.current.shift()
+          }
+
+          // Calculate velocity
+          lastBarSpeed = calculateVelocity(positionHistoryRef.current)
+          lastVelocity = lastBarSpeed
+
+          // Detect rep
+          if (positionHistoryRef.current.length > 2) {
+            const prevPos = positionHistoryRef.current[positionHistoryRef.current.length - 2]
+            const yDelta = wristPosition.y - prevPos.y
+            detectRepetition(yDelta)
+          }
+        }
+
+        // Draw skeleton
+        ctx.strokeStyle = '#00FF00'
+        ctx.lineWidth = 2
+        ctx.fillStyle = '#00FF00'
+
+        // Draw connections
+        const connections = [
+          [11, 13], [13, 15], // Right arm
+          [12, 14], [14, 16], // Left arm
+          [11, 12], // Shoulders
+          [11, 23], [12, 24], // Torso
+          [23, 24], // Hips
+          [23, 25], [25, 27], // Right leg
+          [24, 26], [26, 28], // Left leg
+        ]
+
+        connections.forEach(([start, end]) => {
+          const startLandmark = results.poseLandmarks[start]
+          const endLandmark = results.poseLandmarks[end]
+
+          if (
+            startLandmark &&
+            endLandmark &&
+            startLandmark.visibility > 0.3 &&
+            endLandmark.visibility > 0.3
+          ) {
+            ctx.beginPath()
+            ctx.moveTo(startLandmark.x * canvas.width, startLandmark.y * canvas.height)
+            ctx.lineTo(endLandmark.x * canvas.width, endLandmark.y * canvas.height)
+            ctx.stroke()
+          }
+        })
+
+        // Draw joints
+        results.poseLandmarks.forEach((landmark) => {
+          if (landmark.visibility > 0.3) {
+            ctx.beginPath()
+            ctx.arc(
+              landmark.x * canvas.width,
+              landmark.y * canvas.height,
+              5,
+              0,
+              Math.PI * 2
+            )
+            ctx.fill()
+          }
+        })
+
+        // Draw bar (red line between wrists)
+        if (leftWrist.visibility > 0.3 && rightWrist.visibility > 0.3) {
+          ctx.strokeStyle = '#FF5C4D'
+          ctx.lineWidth = 4
+          ctx.beginPath()
+          ctx.moveTo(leftWrist.x * canvas.width, leftWrist.y * canvas.height)
+          ctx.lineTo(rightWrist.x * canvas.width, rightWrist.y * canvas.height)
+          ctx.stroke()
+        }
+      }
+
+      // Calculate metrics
+      const weight = 30 // Will be from input
+      const reps = repCountRef.current
+      const barSpeed = lastBarSpeed
+      const estimated1RM = weight * (1 + reps / 30)
+      const power = (weight * 9.81 * barSpeed) / 1000
+
+      // Draw metrics
+      ctx.fillStyle = '#FF5C4D'
+      ctx.font = 'bold 20px Arial'
+      ctx.shadowColor = '#000'
+      ctx.shadowBlur = 3
+
+      ctx.fillText(`Speed: ${barSpeed.toFixed(2)} m/s`, 20, 40)
+      ctx.font = '16px Arial'
+      ctx.fillText(`Power: ${power.toFixed(0)} W`, 20, 65)
+      ctx.fillText(`1RM: ${estimated1RM.toFixed(0)} kg`, 20, 90)
+      ctx.fillText(`Reps: ${reps}`, 20, 115)
+      ctx.fillText(`RPE: 8/10`, 20, 140)
+
+      frameCount++
+    }
+
+    pose.onResults(onResults)
+
+    const detect = async () => {
+      if (cameraActive && videoRef.current && poseRef.current) {
+        await poseRef.current.send({ image: videoRef.current })
+        rafRef.current = requestAnimationFrame(detect)
+      }
+    }
+
+    detect()
   }
 
   const stopCamera = () => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     if (videoRef.current?.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(t => t.stop())
+      videoRef.current.srcObject.getTracks().forEach((t) => t.stop())
     }
     setCameraActive(false)
+
+    // Log session
+    if (repCountRef.current > 0) {
+      const session = {
+        id: Date.now(),
+        type: 'lift',
+        timestamp: new Date().toISOString(),
+        weight: 30,
+        reps: repCountRef.current,
+        barSpeed: 0.98,
+        estimated1RM: 30 * (1 + repCountRef.current / 30),
+        power: (30 * 9.81 * 0.98) / 1000
+      }
+      setSessions([...sessions, session])
+      console.log('Session logged:', session)
+    }
+  }
+
+  const exportToCSV = () => {
+    if (sessions.length === 0) {
+      alert('No sessions to export')
+      return
+    }
+
+    const csv = [
+      ['Date', 'Weight (kg)', 'Reps', 'Bar Speed (m/s)', 'Power (W)', '1RM Est'].join(','),
+      ...sessions.map((s) =>
+        [
+          new Date(s.timestamp).toLocaleDateString(),
+          s.weight,
+          s.reps,
+          s.barSpeed.toFixed(2),
+          s.power.toFixed(0),
+          s.estimated1RM.toFixed(0)
+        ].join(',')
+      )
+    ].join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `runnoz-vbt-${Date.now()}.csv`
+    a.click()
   }
 
   return (
     <div style={styles.container}>
-      {/* Hidden video element - feeds data to canvas */}
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        style={{ display: 'none' }}
-      />
+      <video ref={videoRef} autoPlay playsInline muted style={{ display: 'none' }} />
 
       <div style={styles.header}>
         <Zap size={20} color="#FF5C4D" />
-        <h1 style={styles.title}>RUNNOZ Performance</h1>
+        <h1 style={styles.title}>RUNNOZ VBT {poseLoaded ? '✅' : '⏳'}</h1>
+        <button onClick={exportToCSV} style={styles.exportBtn}>
+          <Download size={16} /> Export
+        </button>
       </div>
 
       <div style={styles.tabs}>
@@ -148,36 +337,45 @@ export default function Page() {
       </div>
 
       <div style={styles.content}>
-        <h2>Barbell Velocity Tracking</h2>
-
-        {cameraActive && (
-          <div style={styles.cameraBox}>
-            {/* Canvas displays video + skeleton overlay */}
-            <canvas
-              ref={canvasRef}
-              style={styles.canvas}
-            />
-            <button onClick={stopCamera} style={styles.stopBtn}>
-              <StopCircle size={18} /> STOP
-            </button>
+        {activeTab === 'home' && (
+          <div>
+            <h2>Sessions: {sessions.length}</h2>
+            {sessions.map((s) => (
+              <div key={s.id} style={styles.sessionCard}>
+                <p><strong>{new Date(s.timestamp).toLocaleDateString()}</strong></p>
+                <p>{s.weight}kg × {s.reps} reps | Speed: {s.barSpeed.toFixed(2)} m/s | 1RM: {s.estimated1RM.toFixed(0)}kg</p>
+              </div>
+            ))}
           </div>
         )}
 
-        {!cameraActive && (
-          <>
-            <button onClick={startCamera} style={styles.startBtn}>
-              <Camera size={32} />
-              START REAR CAMERA
-            </button>
+        {activeTab === 'lift' && (
+          <div>
+            <h2>Velocity Based Training {poseLoaded ? '✅' : '⏳'}</h2>
+
+            {cameraActive && (
+              <div style={styles.cameraBox}>
+                <canvas ref={canvasRef} style={styles.canvas} />
+                <button onClick={stopCamera} style={styles.stopBtn}>
+                  <StopCircle size={18} /> STOP
+                </button>
+              </div>
+            )}
+
+            {!cameraActive && (
+              <button onClick={startCamera} disabled={!poseLoaded} style={{...styles.startBtn, opacity: poseLoaded ? 1 : 0.5}}>
+                <Camera size={32} />
+                {poseLoaded ? 'START VBT TRACKING' : 'LOADING AI...'}
+              </button>
+            )}
 
             <div style={styles.form}>
-              <h3>Log Lift</h3>
+              <h3>Quick Log</h3>
               <input type="number" placeholder="Weight (kg)" defaultValue="30" style={styles.inp} />
-              <input type="number" placeholder="Reps" defaultValue="5" style={styles.inp} />
-              <input type="number" placeholder="Speed (m/s)" defaultValue="0.98" step="0.01" style={styles.inp} />
-              <button style={styles.logBtn}>LOG LIFT</button>
+              <input type="number" placeholder="RPE" defaultValue="8" style={styles.inp} />
+              <button style={styles.logBtn}>MANUAL LOG</button>
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>
@@ -186,8 +384,9 @@ export default function Page() {
 
 const styles = {
   container: { minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC', display: 'flex', flexDirection: 'column' },
-  header: { display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 20px', borderBottom: '2px solid #FF5C4D', backgroundColor: '#161B22' },
-  title: { fontSize: '18px', fontWeight: '700', margin: 0 },
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '16px 20px', borderBottom: '2px solid #FF5C4D', backgroundColor: '#161B22' },
+  title: { fontSize: '18px', fontWeight: '700', margin: 0, flex: 1 },
+  exportBtn: { display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#FF5C4D', color: '#FFF', border: 'none', padding: '8px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: '600' },
   tabs: { display: 'flex', gap: '8px', padding: '12px 20px', borderBottom: '1px solid #30363D' },
   tab: { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', backgroundColor: 'transparent', color: '#8B949E', border: '1px solid #30363D', borderRadius: '6px', cursor: 'pointer', fontSize: '13px' },
   tabActive: { backgroundColor: '#FF5C4D', color: '#FFF', borderColor: '#FF5C4D' },
@@ -199,4 +398,5 @@ const styles = {
   form: { backgroundColor: '#161B22', padding: '20px', borderRadius: '8px', border: '1px solid #30363D' },
   inp: { width: '100%', backgroundColor: '#0D1117', color: '#F0F6FC', border: '1px solid #30363D', padding: '10px 12px', borderRadius: '6px', fontSize: '13px', marginBottom: '10px', boxSizing: 'border-box' },
   logBtn: { width: '100%', padding: '12px', backgroundColor: '#FF5C4D', color: '#FFF', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '700', fontSize: '14px', marginTop: '8px' },
+  sessionCard: { backgroundColor: '#161B22', padding: '16px', borderRadius: '8px', marginBottom: '12px', border: '1px solid #30363D' },
 }
