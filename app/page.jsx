@@ -5,7 +5,6 @@ export default function Page() {
   const [status, setStatus] = useState('Loading TensorFlow...')
   const [cameraActive, setCameraActive] = useState(false)
   const [poseReady, setPoseReady] = useState(false)
-  const [debug, setDebug] = useState('')
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const detectorRef = useRef(null)
@@ -26,9 +25,11 @@ export default function Page() {
 
         detectorRef.current = detector
         setPoseReady(true)
-        setStatus('Ready - Click START')
+        setStatus('✅ Ready - Click START')
+        console.log('TensorFlow loaded')
       } catch (error) {
-        setStatus('Error: ' + error.message)
+        setStatus('Error loading TensorFlow')
+        console.error(error)
       }
     }
     loadTF()
@@ -39,37 +40,35 @@ export default function Page() {
     
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', audio: false }
+        video: { facingMode: 'environment' },
+        audio: false
       })
 
       videoRef.current.srcObject = stream
       
       videoRef.current.onloadedmetadata = () => {
-        setCameraActive(true)
-        setStatus('Warming up detector...')
-        
         if (canvasRef.current && videoRef.current) {
           canvasRef.current.width = videoRef.current.videoWidth
           canvasRef.current.height = videoRef.current.videoHeight
         }
         
-        warmupDetector().then(() => {
-          setStatus('✅ Tracking active!')
-          startPoseDetection()
-        })
+        setCameraActive(true)
+        setStatus('Warming up AI...')
+        warmupDetector()
       }
     } catch (err) {
-      setStatus('Error: ' + err.message)
+      setStatus('Camera error: ' + err.message)
     }
   }
 
   const warmupDetector = async () => {
     try {
-      setDebug('Warmup: Running first detection...')
       await detectorRef.current.estimatePoses(videoRef.current)
-      setDebug('Warmup: Complete')
+      setStatus('🎥 Tracking...')
+      startPoseDetection()
     } catch (error) {
-      setDebug('Warmup error: ' + error.message)
+      console.error('Warmup error:', error)
+      setStatus('Detection error')
     }
   }
 
@@ -84,25 +83,23 @@ export default function Page() {
     let frameCount = 0
 
     const detect = async () => {
-      frameCount++
-
       if (!cameraActive) return
+
+      frameCount++
 
       try {
         const poses = await detector.estimatePoses(video)
-
-        if (frameCount % 10 === 0 || frameCount === 1) {
-          setDebug(`Frame ${frameCount}: ${poses.length} poses`)
-        }
 
         ctx.clearRect(0, 0, canvas.width, canvas.height)
 
         if (poses && poses.length > 0) {
           const keypoints = poses[0].keypoints
 
+          // Draw GREEN skeleton
           ctx.strokeStyle = '#00FF00'
           ctx.lineWidth = 3
           ctx.fillStyle = '#00FF00'
+          ctx.globalAlpha = 0.9
 
           const connections = [
             [11, 13], [13, 15], [12, 14], [14, 16],
@@ -129,6 +126,9 @@ export default function Page() {
             }
           })
 
+          ctx.globalAlpha = 1.0
+
+          // Draw RED bar between wrists
           const leftWrist = keypoints[15]
           const rightWrist = keypoints[16]
           if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
@@ -141,6 +141,7 @@ export default function Page() {
           }
         }
 
+        // Draw metrics
         ctx.fillStyle = '#FF5C4D'
         ctx.font = 'bold 26px Arial'
         ctx.shadowColor = '#000'
@@ -155,7 +156,7 @@ export default function Page() {
           rafRef.current = requestAnimationFrame(detect)
         }
       } catch (error) {
-        setDebug('Error: ' + error.message)
+        console.error('Detection error:', error)
       }
     }
 
@@ -173,14 +174,17 @@ export default function Page() {
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC', padding: '20px' }}>
-      <h1 style={{ fontSize: '24px', marginBottom: '10px' }}>RUNNOZ VBT {poseReady ? '✅' : '⏳'}</h1>
-      <p style={{ fontSize: '16px', fontWeight: 'bold', color: '#FF5C4D', marginBottom: '5px' }}>Status: {status}</p>
-      <p style={{ fontSize: '12px', color: '#8B949E', marginBottom: '20px' }}>Debug: {debug}</p>
+      <h1 style={{ fontSize: '28px', fontWeight: 'bold', marginBottom: '8px' }}>
+        RUNNOZ VBT {poseReady ? '✅' : '⏳'}
+      </h1>
+      <p style={{ fontSize: '16px', fontWeight: 'bold', color: '#FF5C4D', marginBottom: '20px' }}>
+        {status}
+      </p>
 
       {!cameraActive && (
         <button 
           onClick={startCamera} 
-          disabled={!poseReady} 
+          disabled={!poseReady}
           style={{
             width: '100%',
             padding: '60px 20px',
@@ -195,7 +199,7 @@ export default function Page() {
             opacity: poseReady ? 1 : 0.6
           }}
         >
-          {poseReady ? 'START VBT TRACKING' : 'LOADING AI...'}
+          {poseReady ? '▶ START VBT TRACKING' : 'LOADING AI...'}
         </button>
       )}
 
@@ -234,7 +238,7 @@ export default function Page() {
         
         {cameraActive && (
           <button 
-            onClick={stopCamera} 
+            onClick={stopCamera}
             style={{
               position: 'absolute',
               bottom: '16px',
@@ -250,7 +254,7 @@ export default function Page() {
               zIndex: 20
             }}
           >
-            STOP
+            ⏹ STOP
           </button>
         )}
       </div>
