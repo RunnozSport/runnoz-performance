@@ -2,36 +2,57 @@
 import { useState, useRef, useEffect } from 'react'
 
 export default function Page() {
-  const [status, setStatus] = useState('Initializing...')
+  const [status, setStatus] = useState('Loading TensorFlow...')
   const [cameraActive, setCameraActive] = useState(false)
   const [poseReady, setPoseReady] = useState(false)
   const [sessions, setSessions] = useState([])
   
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const poseRef = useRef(null)
+  const detectorRef = useRef(null)
   const rafRef = useRef(null)
   const positionHistoryRef = useRef([])
   const repCountRef = useRef(0)
   const lastYRef = useRef(null)
 
-  // Check for MediaPipe Pose every 100ms
+  // Initialize TensorFlow.js Pose Detection
   useEffect(() => {
-    const checkPose = setInterval(() => {
-      if (typeof window !== 'undefined' && window.Pose) {
-        console.log('✅ Pose ready!')
+    const initTF = async () => {
+      try {
+        console.log('Loading TensorFlow...')
+        const tf = await import('@tensorflow/tfjs')
+        const webgl = await import('@tensorflow/tfjs-backend-webgl')
+        const poseDetection = await import('@tensorflow-models/pose-detection')
+        
+        // Set backend
+        await tf.setBackend('webgl')
+        console.log('TensorFlow backend:', tf.getBackend())
+
+        // Create detector
+        const detector = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MovenetSinglePose,
+          {
+            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+            enableSmoothing: true
+          }
+        )
+
+        detectorRef.current = detector
         setPoseReady(true)
         setStatus('Ready - Click START')
-        clearInterval(checkPose)
+        console.log('✅ TensorFlow Pose Detection Ready!')
+      } catch (error) {
+        console.error('TensorFlow init error:', error)
+        setStatus('Error: ' + error.message)
       }
-    }, 100)
+    }
 
-    return () => clearInterval(checkPose)
+    initTF()
   }, [])
 
   const startCamera = async () => {
     if (!poseReady) {
-      alert('Pose Detection still loading...')
+      alert('TensorFlow still loading...')
       return
     }
 
@@ -50,7 +71,7 @@ export default function Page() {
         positionHistoryRef.current = []
         lastYRef.current = null
 
-        setTimeout(() => startPoseDetection(), 500)
+        setTimeout(() => startPoseDetection(), 1000)
       }
     } catch (err) {
       setStatus('Camera Error: ' + err.message)
@@ -60,153 +81,141 @@ export default function Page() {
   const startPoseDetection = () => {
     const video = videoRef.current
     const canvas = canvasRef.current
-    if (!video || !canvas || !window.Pose) return
+    if (!video || !canvas || !detectorRef.current) return
 
-    const pose = new window.Pose({
-      locateFile: (file) =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469629/${file}`
-    })
-
-    pose.setOptions({
-      modelComplexity: 1,
-      smoothLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    })
-
-    poseRef.current = pose
     const ctx = canvas.getContext('2d')
 
-    const onResults = (results) => {
-      if (!cameraActive) return
+    const detect = async () => {
+      if (!cameraActive || !video || !detectorRef.current) return
 
-      if (canvas.width === 0) {
-        canvas.width = video.videoWidth || 640
-        canvas.height = video.videoHeight || 480
-      }
+      try {
+        // Run pose detection
+        const poses = await detectorRef.current.estimatePoses(video)
 
-      // Draw video
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-      let barSpeed = 0
-
-      if (results.poseLandmarks && results.poseLandmarks.length > 0) {
-        const landmarks = results.poseLandmarks
-
-        // Get wrists
-        const leftWrist = landmarks[16]
-        const rightWrist = landmarks[15]
-
-        if (leftWrist && rightWrist && leftWrist.visibility > 0.3 && rightWrist.visibility > 0.3) {
-          const centerX = (leftWrist.x + rightWrist.x) / 2
-          const centerY = (leftWrist.y + rightWrist.y) / 2
-          const centerZ = (leftWrist.z + rightWrist.z) / 2
-
-          positionHistoryRef.current.push({ x: centerX, y: centerY, z: centerZ })
-          if (positionHistoryRef.current.length > 30) {
-            positionHistoryRef.current.shift()
-          }
-
-          // Calculate velocity
-          if (positionHistoryRef.current.length > 5) {
-            let totalDist = 0
-            const recent = positionHistoryRef.current
-            for (let i = 1; i < recent.length; i++) {
-              const dx = recent[i].x - recent[i - 1].x
-              const dy = recent[i].y - recent[i - 1].y
-              const dz = recent[i].z - recent[i - 1].z
-              const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
-              totalDist += dist
-            }
-            barSpeed = Math.min(totalDist * 1.5, 2.5)
-          }
-
-          // Rep detection
-          if (lastYRef.current !== null) {
-            const yDelta = centerY - lastYRef.current
-            if (yDelta > 0.05) repCountRef.current++
-          }
-          lastYRef.current = centerY
+        // Set canvas size
+        if (canvas.width === 0) {
+          canvas.width = video.videoWidth || 640
+          canvas.height = video.videoHeight || 480
         }
 
-        // Draw skeleton green
-        ctx.strokeStyle = '#00FF00'
-        ctx.lineWidth = 2
-        ctx.fillStyle = '#00FF00'
-        ctx.globalAlpha = 0.8
+        // Draw video
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
-        const connections = [
-          [11, 13], [13, 15], [12, 14], [14, 16],
-          [11, 12], [11, 23], [12, 24], [23, 24],
-          [23, 25], [25, 27], [24, 26], [26, 28]
-        ]
+        let barSpeed = 0
 
-        connections.forEach(([start, end]) => {
-          const startLand = landmarks[start]
-          const endLand = landmarks[end]
-          if (startLand && endLand && startLand.visibility > 0.3 && endLand.visibility > 0.3) {
+        if (poses && poses.length > 0) {
+          const keypoints = poses[0].keypoints
+
+          // Wrists: 9=left, 10=right
+          const leftWrist = keypoints[9]
+          const rightWrist = keypoints[10]
+
+          if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
+            const centerX = (leftWrist.x + rightWrist.x) / 2 / canvas.width
+            const centerY = (leftWrist.y + rightWrist.y) / 2 / canvas.height
+
+            positionHistoryRef.current.push({ x: centerX, y: centerY })
+            if (positionHistoryRef.current.length > 30) {
+              positionHistoryRef.current.shift()
+            }
+
+            // Calculate velocity
+            if (positionHistoryRef.current.length > 5) {
+              let totalDist = 0
+              const recent = positionHistoryRef.current
+              for (let i = 1; i < recent.length; i++) {
+                const dx = recent[i].x - recent[i - 1].x
+                const dy = recent[i].y - recent[i - 1].y
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                totalDist += dist
+              }
+              barSpeed = Math.min(totalDist * 2.0, 2.5)
+            }
+
+            // Rep detection
+            if (lastYRef.current !== null) {
+              const yDelta = centerY - lastYRef.current
+              if (yDelta > 0.06 && lastYRef.current > centerY) {
+                repCountRef.current++
+              }
+            }
+            lastYRef.current = centerY
+          }
+
+          // Draw skeleton
+          ctx.strokeStyle = '#00FF00'
+          ctx.lineWidth = 2
+          ctx.fillStyle = '#00FF00'
+          ctx.globalAlpha = 0.8
+
+          // Skeleton connections
+          const connections = [
+            [5, 7], [7, 9],       // Left arm
+            [6, 8], [8, 10],      // Right arm
+            [5, 6],               // Shoulders
+            [5, 11], [6, 12],     // Torso
+            [11, 12],             // Hips
+            [11, 13], [13, 15],   // Left leg
+            [12, 14], [14, 16]    // Right leg
+          ]
+
+          connections.forEach(([start, end]) => {
+            const startKp = keypoints[start]
+            const endKp = keypoints[end]
+            if (startKp && endKp && startKp.score > 0.3 && endKp.score > 0.3) {
+              ctx.beginPath()
+              ctx.moveTo(startKp.x, startKp.y)
+              ctx.lineTo(endKp.x, endKp.y)
+              ctx.stroke()
+            }
+          })
+
+          // Draw joints
+          keypoints.forEach((kp) => {
+            if (kp && kp.score > 0.3) {
+              ctx.beginPath()
+              ctx.arc(kp.x, kp.y, 4, 0, Math.PI * 2)
+              ctx.fill()
+            }
+          })
+
+          ctx.globalAlpha = 1.0
+
+          // Draw bar (red line between wrists)
+          if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
+            ctx.strokeStyle = '#FF5C4D'
+            ctx.lineWidth = 4
             ctx.beginPath()
-            ctx.moveTo(startLand.x * canvas.width, startLand.y * canvas.height)
-            ctx.lineTo(endLand.x * canvas.width, endLand.y * canvas.height)
+            ctx.moveTo(leftWrist.x, leftWrist.y)
+            ctx.lineTo(rightWrist.x, rightWrist.y)
             ctx.stroke()
           }
-        })
-
-        landmarks.forEach((landmark) => {
-          if (landmark.visibility > 0.3) {
-            ctx.beginPath()
-            ctx.arc(landmark.x * canvas.width, landmark.y * canvas.height, 4, 0, Math.PI * 2)
-            ctx.fill()
-          }
-        })
-
-        ctx.globalAlpha = 1.0
-      }
-
-      // Draw bar red
-      if (results.poseLandmarks) {
-        const leftWrist = results.poseLandmarks[16]
-        const rightWrist = results.poseLandmarks[15]
-        if (leftWrist && rightWrist && leftWrist.visibility > 0.3 && rightWrist.visibility > 0.3) {
-          ctx.strokeStyle = '#FF5C4D'
-          ctx.lineWidth = 4
-          ctx.beginPath()
-          ctx.moveTo(leftWrist.x * canvas.width, leftWrist.y * canvas.height)
-          ctx.lineTo(rightWrist.x * canvas.width, rightWrist.y * canvas.height)
-          ctx.stroke()
         }
-      }
 
-      // Metrics
-      const weight = 30
-      const reps = repCountRef.current
-      const power = (weight * 9.81 * barSpeed) / 1000
-      const est1rm = weight * (1 + Math.max(reps, 1) / 30)
+        // Draw metrics
+        const weight = 30
+        const reps = repCountRef.current
+        const power = (weight * 9.81 * barSpeed) / 1000
+        const est1rm = weight * (1 + Math.max(reps, 1) / 30)
 
-      ctx.fillStyle = '#FF5C4D'
-      ctx.font = 'bold 26px Arial'
-      ctx.shadowColor = '#000'
-      ctx.shadowBlur = 4
+        ctx.fillStyle = '#FF5C4D'
+        ctx.font = 'bold 26px Arial'
+        ctx.shadowColor = '#000'
+        ctx.shadowBlur = 4
 
-      ctx.fillText(`${barSpeed.toFixed(2)} m/s`, 20, 50)
-      ctx.font = '18px Arial'
-      ctx.fillText(`${power.toFixed(0)}W`, 20, 80)
-      ctx.fillText(`1RM: ${est1rm.toFixed(0)}kg`, 20, 110)
-      ctx.fillText(`Reps: ${reps}`, 20, 140)
+        ctx.fillText(`${barSpeed.toFixed(2)} m/s`, 20, 50)
+        ctx.font = '18px Arial'
+        ctx.fillText(`${power.toFixed(0)}W`, 20, 80)
+        ctx.fillText(`1RM: ${est1rm.toFixed(0)}kg`, 20, 110)
+        ctx.fillText(`Reps: ${reps}`, 20, 140)
 
-      setStatus(`Tracking... ${reps} reps`)
-    }
+        setStatus(`Tracking... ${reps} reps | Speed: ${barSpeed.toFixed(2)} m/s`)
 
-    pose.onResults(onResults)
-
-    const detect = async () => {
-      if (cameraActive && video && poseRef.current) {
-        try {
-          await poseRef.current.send({ image: video })
+        if (cameraActive) {
           rafRef.current = requestAnimationFrame(detect)
-        } catch (e) {
-          console.error(e)
         }
+      } catch (error) {
+        console.error('Detection error:', error)
       }
     }
 
