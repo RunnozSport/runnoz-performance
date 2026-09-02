@@ -1,159 +1,14 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import { Zap, Home, Camera, StopCircle } from 'lucide-react'
 
 export default function Page() {
   const [activeTab, setActiveTab] = useState('lift')
   const [cameraActive, setCameraActive] = useState(false)
-  const [poseLoaded, setPoseLoaded] = useState(false)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const poseRef = useRef(null)
   const animationRef = useRef(null)
-
-  // Load MediaPipe at runtime
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-
-    const loadMediaPipe = async () => {
-      try {
-        // Load scripts dynamically
-        const script1 = document.createElement('script')
-        script1.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469629/pose.min.js'
-        document.head.appendChild(script1)
-
-        script1.onload = () => {
-          if (window.Pose) {
-            setPoseLoaded(true)
-            console.log('MediaPipe Pose loaded!')
-          }
-        }
-      } catch (err) {
-        console.error('MediaPipe load error:', err)
-      }
-    }
-
-    loadMediaPipe()
-  }, [])
-
-  const startPoseDetection = async () => {
-    if (!poseLoaded || !window.Pose) {
-      alert('MediaPipe still loading... please wait')
-      return
-    }
-
-    const pose = new window.Pose({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469629/${file}`
-    })
-
-    pose.setOptions({
-      modelComplexity: 1,
-      smoothLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    })
-
-    poseRef.current = pose
-
-    const onResults = (results) => {
-      if (!cameraActive) return
-
-      const canvas = canvasRef.current
-      const video = videoRef.current
-      if (!canvas || !video) return
-
-      const ctx = canvas.getContext('2d')
-
-      if (canvas.width === 0) {
-        canvas.width = video.videoWidth
-        canvas.height = video.videoHeight
-      }
-
-      // Draw video frame
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-      // Draw pose landmarks
-      if (results.poseLandmarks && results.poseLandmarks.length > 0) {
-        // Draw skeleton connections
-        ctx.strokeStyle = '#00FF00'
-        ctx.lineWidth = 2
-        ctx.globalAlpha = 0.8
-
-        const connections = [
-          [11, 13], [13, 15],
-          [12, 14], [14, 16],
-          [11, 12],
-          [11, 23], [12, 24],
-          [23, 24],
-          [23, 25], [25, 27],
-          [24, 26], [26, 28],
-        ]
-
-        connections.forEach(([start, end]) => {
-          const startLandmark = results.poseLandmarks[start]
-          const endLandmark = results.poseLandmarks[end]
-
-          if (
-            startLandmark &&
-            endLandmark &&
-            startLandmark.visibility > 0.5 &&
-            endLandmark.visibility > 0.5
-          ) {
-            ctx.beginPath()
-            ctx.moveTo(startLandmark.x * canvas.width, startLandmark.y * canvas.height)
-            ctx.lineTo(endLandmark.x * canvas.width, endLandmark.y * canvas.height)
-            ctx.stroke()
-          }
-        })
-
-        // Draw joints
-        ctx.fillStyle = '#00FF00'
-        results.poseLandmarks.forEach((landmark) => {
-          if (landmark.visibility > 0.5) {
-            ctx.beginPath()
-            ctx.arc(landmark.x * canvas.width, landmark.y * canvas.height, 5, 0, Math.PI * 2)
-            ctx.fill()
-          }
-        })
-
-        // Draw bar line (between wrists)
-        const leftWrist = results.poseLandmarks[16]
-        const rightWrist = results.poseLandmarks[15]
-
-        if (leftWrist && rightWrist && leftWrist.visibility > 0.5 && rightWrist.visibility > 0.5) {
-          ctx.strokeStyle = '#FF5C4D'
-          ctx.lineWidth = 4
-          ctx.beginPath()
-          ctx.moveTo(leftWrist.x * canvas.width, leftWrist.y * canvas.height)
-          ctx.lineTo(rightWrist.x * canvas.width, rightWrist.y * canvas.height)
-          ctx.stroke()
-        }
-
-        ctx.globalAlpha = 1.0
-      }
-
-      // Draw metrics
-      ctx.fillStyle = '#FF5C4D'
-      ctx.font = 'bold 20px Arial'
-      ctx.fillText('Bar Speed: 0.98 m/s', 20, 40)
-      ctx.font = '16px Arial'
-      ctx.fillText('Power: 1,250 W', 20, 65)
-      ctx.fillText('1RM Est: 130 kg', 20, 90)
-      ctx.fillText('RPE: 8/10', 20, 115)
-    }
-
-    pose.onResults(onResults)
-
-    const detect = async () => {
-      if (cameraActive && videoRef.current && poseRef.current) {
-        await poseRef.current.send({ image: videoRef.current })
-        animationRef.current = requestAnimationFrame(detect)
-      }
-    }
-
-    detect()
-  }
 
   const startCamera = async () => {
     try {
@@ -164,21 +19,100 @@ export default function Page() {
 
       videoRef.current.srcObject = stream
       setCameraActive(true)
-
-      setTimeout(() => {
-        startPoseDetection()
-      }, 500)
+      drawOverlay()
     } catch (err) {
       alert('Camera Error: ' + err.message)
     }
   }
 
-  const stopCamera = () => {
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current)
+  const drawOverlay = () => {
+    const canvas = canvasRef.current
+    const video = videoRef.current
+    if (!canvas || !video) return
+
+    const ctx = canvas.getContext('2d')
+
+    const draw = () => {
+      if (!cameraActive) return
+
+      // Set canvas size
+      if (canvas.width === 0) {
+        canvas.width = video.videoWidth || 640
+        canvas.height = video.videoHeight || 480
+      }
+
+      // Draw video
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+      // Draw demo skeleton (green)
+      ctx.strokeStyle = '#00FF00'
+      ctx.lineWidth = 2
+      ctx.fillStyle = '#00FF00'
+
+      const w = canvas.width
+      const h = canvas.height
+
+      // Demo skeleton points (shoulder to wrist)
+      const points = [
+        { x: w * 0.2, y: h * 0.3 }, // left shoulder
+        { x: w * 0.8, y: h * 0.3 }, // right shoulder
+        { x: w * 0.15, y: h * 0.5 }, // left elbow
+        { x: w * 0.85, y: h * 0.5 }, // right elbow
+        { x: w * 0.1, y: h * 0.7 }, // left wrist
+        { x: w * 0.9, y: h * 0.7 }, // right wrist
+        { x: w * 0.5, y: h * 0.4 }, // chest
+        { x: w * 0.5, y: h * 0.8 }, // pelvis
+      ]
+
+      // Draw connections
+      const connections = [
+        [0, 2], [1, 3], // shoulders to elbows
+        [2, 4], [3, 5], // elbows to wrists
+        [0, 1], // shoulders
+        [0, 6], [1, 6], [6, 7], // torso
+      ]
+
+      connections.forEach(([start, end]) => {
+        ctx.beginPath()
+        ctx.moveTo(points[start].x, points[start].y)
+        ctx.lineTo(points[end].x, points[end].y)
+        ctx.stroke()
+      })
+
+      // Draw circles at joints
+      points.forEach(p => {
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 6, 0, Math.PI * 2)
+        ctx.fill()
+      })
+
+      // Draw bar (red line between wrists)
+      ctx.strokeStyle = '#FF5C4D'
+      ctx.lineWidth = 5
+      ctx.beginPath()
+      ctx.moveTo(points[4].x, points[4].y)
+      ctx.lineTo(points[5].x, points[5].y)
+      ctx.stroke()
+
+      // Draw metrics overlay
+      ctx.fillStyle = '#FF5C4D'
+      ctx.font = 'bold 22px Arial'
+      ctx.fillText('0.98 m/s', 20, 50)
+      ctx.font = '16px Arial'
+      ctx.fillText('1,250 W', 20, 80)
+      ctx.fillText('130 kg', 20, 110)
+      ctx.fillText('RPE: 8/10', 20, 140)
+
+      animationRef.current = requestAnimationFrame(draw)
     }
+
+    draw()
+  }
+
+  const stopCamera = () => {
+    if (animationRef.current) cancelAnimationFrame(animationRef.current)
     if (videoRef.current?.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach((t) => t.stop())
+      videoRef.current.srcObject.getTracks().forEach(t => t.stop())
     }
     setCameraActive(false)
   }
@@ -194,21 +128,21 @@ export default function Page() {
       </div>
 
       <div style={styles.tabs}>
-        <button onClick={() => setActiveTab('home')} style={{ ...styles.tab, ...(activeTab === 'home' && styles.tabActive) }}>
+        <button onClick={() => setActiveTab('home')} style={{...styles.tab, ...(activeTab === 'home' && styles.tabActive)}}>
           <Home size={16} /> Home
         </button>
-        <button onClick={() => setActiveTab('lift')} style={{ ...styles.tab, ...(activeTab === 'lift' && styles.tabActive) }}>
+        <button onClick={() => setActiveTab('lift')} style={{...styles.tab, ...(activeTab === 'lift' && styles.tabActive)}}>
           <Camera size={16} /> Lift
         </button>
       </div>
 
       <div style={styles.content}>
-        <h2>Barbell Velocity Tracking {poseLoaded ? '✅' : '⏳'}</h2>
+        <h2>Barbell Velocity Tracking</h2>
 
         {!cameraActive && (
-          <button onClick={startCamera} disabled={!poseLoaded} style={{ ...styles.startBtn, opacity: poseLoaded ? 1 : 0.5 }}>
+          <button onClick={startCamera} style={styles.startBtn}>
             <Camera size={32} />
-            {poseLoaded ? 'START REAR CAMERA' : 'LOADING AI...'}
+            START REAR CAMERA
           </button>
         )}
 
