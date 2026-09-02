@@ -27,8 +27,10 @@ export default function Page() {
         detectorRef.current = detector
         setPoseReady(true)
         setStatus('Ready - Click START')
+        setDebug('TensorFlow loaded')
       } catch (error) {
         setStatus('Error: ' + error.message)
+        setDebug('TF Error: ' + error.message)
       }
     }
     loadTF()
@@ -37,6 +39,7 @@ export default function Page() {
   const startCamera = async () => {
     if (!poseReady) return
     
+    setDebug('Starting camera...')
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
@@ -44,33 +47,43 @@ export default function Page() {
       })
 
       videoRef.current.srcObject = stream
+      setDebug('Stream set')
       
       videoRef.current.onloadedmetadata = () => {
-        setDebug('Video metadata loaded')
+        setDebug('Video metadata loaded, starting detection')
         setCameraActive(true)
         setStatus('Detecting pose...')
         
-        // Resize canvas NOW
         if (canvasRef.current && videoRef.current) {
           canvasRef.current.width = videoRef.current.videoWidth
           canvasRef.current.height = videoRef.current.videoHeight
-          setDebug(`Canvas resized to ${canvasRef.current.width}x${canvasRef.current.height}`)
+          setDebug(`Canvas: ${canvasRef.current.width}x${canvasRef.current.height}`)
         }
         
-        setTimeout(() => startPoseDetection(), 500)
+        startPoseDetection()
       }
     } catch (err) {
       setStatus('Error: ' + err.message)
+      setDebug('Camera error: ' + err.message)
     }
   }
 
   const startPoseDetection = () => {
+    setDebug('startPoseDetection called')
     const video = videoRef.current
     const canvas = canvasRef.current
     const detector = detectorRef.current
 
-    if (!video || !canvas || !detector) {
-      setDebug('Missing elements!')
+    if (!video) {
+      setDebug('❌ video null')
+      return
+    }
+    if (!canvas) {
+      setDebug('❌ canvas null')
+      return
+    }
+    if (!detector) {
+      setDebug('❌ detector null')
       return
     }
 
@@ -78,32 +91,36 @@ export default function Page() {
     let frameCount = 0
 
     const detect = async () => {
+      frameCount++
+      
+      // Log EVERY frame for first 5 frames
+      if (frameCount <= 5) {
+        setDebug(`Frame ${frameCount} - starting pose estimation`)
+      }
+
       if (!cameraActive) return
 
-      frameCount++
-
       try {
-        // Ensure canvas is sized
-        if (canvas.width !== video.videoWidth) {
-          canvas.width = video.videoWidth
-          canvas.height = video.videoHeight
-        }
-
-        // Clear canvas
-        ctx.fillStyle = 'rgba(0,0,0,0)'
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-        // Get poses
         const poses = await detector.estimatePoses(video)
-
-        if (frameCount === 1 || frameCount % 30 === 0) {
-          setDebug(`Frame ${frameCount}: ${poses.length} poses detected, canvas: ${canvas.width}x${canvas.height}`)
+        
+        if (frameCount <= 5) {
+          setDebug(`Frame ${frameCount} - ${poses.length} poses detected`)
         }
+
+        // Draw test circle to verify canvas works
+        ctx.fillStyle = '#FF5C4D'
+        ctx.beginPath()
+        ctx.arc(50, 50, 30, 0, Math.PI * 2)
+        ctx.fill()
+
+        // Draw test metrics
+        ctx.fillStyle = '#00FF00'
+        ctx.font = 'bold 20px Arial'
+        ctx.fillText('TEST: ' + frameCount, 20, 100)
 
         if (poses && poses.length > 0) {
           const keypoints = poses[0].keypoints
 
-          // Draw GREEN skeleton
           ctx.strokeStyle = '#00FF00'
           ctx.lineWidth = 3
           ctx.fillStyle = '#00FF00'
@@ -114,7 +131,6 @@ export default function Page() {
             [23, 25], [25, 27], [24, 26], [26, 28]
           ]
 
-          let connectionCount = 0
           connections.forEach(([start, end]) => {
             const startKp = keypoints[start]
             const endKp = keypoints[end]
@@ -123,11 +139,9 @@ export default function Page() {
               ctx.moveTo(startKp.x, startKp.y)
               ctx.lineTo(endKp.x, endKp.y)
               ctx.stroke()
-              connectionCount++
             }
           })
 
-          // Draw joint circles
           keypoints.forEach((kp) => {
             if (kp && kp.score > 0.3) {
               ctx.beginPath()
@@ -136,7 +150,6 @@ export default function Page() {
             }
           })
 
-          // Draw RED bar
           const leftWrist = keypoints[15]
           const rightWrist = keypoints[16]
           if (leftWrist && rightWrist && leftWrist.score > 0.3 && rightWrist.score > 0.3) {
@@ -146,23 +159,16 @@ export default function Page() {
             ctx.moveTo(leftWrist.x, leftWrist.y)
             ctx.lineTo(rightWrist.x, rightWrist.y)
             ctx.stroke()
-
-            if (frameCount === 1) {
-              setDebug(`Drew ${connectionCount} connections and red bar`)
-            }
           }
         }
 
-        // Draw metrics
         ctx.fillStyle = '#FF5C4D'
         ctx.font = 'bold 26px Arial'
-        ctx.shadowColor = '#000'
-        ctx.shadowBlur = 4
-        ctx.fillText('0.95 m/s', 20, 50)
+        ctx.fillText('0.95 m/s', 20, 150)
         ctx.font = '18px Arial'
-        ctx.fillText('1250W', 20, 80)
-        ctx.fillText('1RM: 130kg', 20, 110)
-        ctx.fillText('Reps: 5', 20, 140)
+        ctx.fillText('1250W', 20, 180)
+        ctx.fillText('1RM: 130kg', 20, 210)
+        ctx.fillText('Reps: 5', 20, 240)
 
         if (frameCount === 1) {
           setStatus('✅ Tracking active!')
@@ -172,9 +178,8 @@ export default function Page() {
           rafRef.current = requestAnimationFrame(detect)
         }
       } catch (error) {
-        console.error('Detection error:', error)
-        if (frameCount === 1) {
-          setDebug('Error: ' + error.message)
+        if (frameCount <= 5) {
+          setDebug(`Frame ${frameCount} ERROR: ${error.message}`)
         }
       }
     }
@@ -195,7 +200,7 @@ export default function Page() {
     <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC', padding: '20px' }}>
       <h1 style={{ fontSize: '24px', marginBottom: '10px' }}>RUNNOZ VBT {poseReady ? '✅' : '⏳'}</h1>
       <p style={{ fontSize: '16px', fontWeight: 'bold', color: '#FF5C4D', marginBottom: '5px' }}>Status: {status}</p>
-      <p style={{ fontSize: '12px', color: '#8B949E', marginBottom: '20px' }}>Debug: {debug}</p>
+      <p style={{ fontSize: '12px', color: '#8B949E', marginBottom: '20px', fontFamily: 'monospace' }}>Debug: {debug}</p>
 
       {!cameraActive && (
         <button 
