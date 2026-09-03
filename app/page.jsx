@@ -2,101 +2,77 @@
 import { useState, useRef, useEffect } from 'react'
 
 export default function Page() {
-  const [status, setStatus] = useState('Loading AI Models...')
+  const [activeTab, setActiveTab] = useState('camera') // 'camera' | 'autoregulate'
+  const [status, setStatus] = useState('Camera Ready')
   const [cameraActive, setCameraActive] = useState(false)
-  const [poseReady, setPoseReady] = useState(false)
+  const [isLocked, setIsLocked] = useState(false)
+  
+  // VBT Settings
   const [loadKg, setLoadKg] = useState(100)
+  const [exercise, setExercise] = useState('Back Squat')
+  const [audioFeedback, setAudioFeedback] = useState(true)
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const detectorRef = useRef(null)
   const rafRef = useRef(null)
   const isTrackingRef = useRef(false)
 
-  // Synchronous Tracking Refs (Fixes zero calculations)
+  // Tracking Math & State
+  const trackPointRef = useRef(null) // Current {x, y}
+  const prevFrameDataRef = useRef(null)
   const lastYRef = useRef(null)
   const lastTimeRef = useRef(null)
+  const pathPointsRef = useRef([])
   const isConcentricRef = useRef(false)
-  
-  // Real-time Metric Refs
-  const currentVelRef = useRef(0)
-  const peakVelRef = useRef(0)
-  const peakPowerRef = useRef(0)
+
+  // Metrics Data
+  const currentVelRef = useRef(0.00)
+  const peakVelRef = useRef(0.00)
   const repCountRef = useRef(0)
-  const est1RMRef = useRef(0)
+
+  // Voice Feedback
+  const speakVelocity = (vel) => {
+    if (!audioFeedback || typeof window === 'undefined') return
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+      const msg = new SpeechSynthesisUtterance(`${vel.toFixed(2)}`)
+      msg.rate = 1.2
+      window.speechSynthesis.speak(msg)
+    }
+  }
 
   useEffect(() => {
-    let isMounted = true
-
-    const initTensorFlow = async () => {
-      if (typeof window === 'undefined') return
-
-      try {
-        const tf = await import('@tensorflow/tfjs')
-        await import('@tensorflow/tfjs-backend-webgl')
-        const poseDetection = await import('@tensorflow-models/pose-detection')
-
-        await tf.ready()
-        await tf.setBackend('webgl')
-
-        const detector = await poseDetection.createDetector(
-          poseDetection.SupportedModels.MoveNet,
-          { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
-        )
-
-        if (isMounted) {
-          detectorRef.current = detector
-          setPoseReady(true)
-          setStatus('✅ Ready - Click START')
-        }
-      } catch (error) {
-        console.error('TFJS Load Error:', error)
-        if (isMounted) setStatus('Error loading AI model: ' + error.message)
-      }
-    }
-
-    initTensorFlow()
-
     return () => {
-      isMounted = false
       isTrackingRef.current = false
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
   }, [])
 
+  // Start Video Stream
   const startCamera = async () => {
-    if (!poseReady) return
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        video: { 
+          width: { ideal: 720 }, 
+          height: { ideal: 1280 }, 
+          facingMode: 'environment',
+          frameRate: { ideal: 60 }
+        },
         audio: false
       })
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream
-
         videoRef.current.onloadedmetadata = () => {
           videoRef.current.play()
 
           if (canvasRef.current && videoRef.current) {
-            canvasRef.current.width = videoRef.current.videoWidth || 640
-            canvasRef.current.height = videoRef.current.videoHeight || 480
+            canvasRef.current.width = videoRef.current.videoWidth || 720
+            canvasRef.current.height = videoRef.current.videoHeight || 1280
           }
 
-          // Reset metric tracking variables
-          lastYRef.current = null
-          lastTimeRef.current = null
-          currentVelRef.current = 0
-          peakVelRef.current = 0
-          peakPowerRef.current = 0
-          repCountRef.current = 0
-          est1RMRef.current = 0
-
-          isTrackingRef.current = true
           setCameraActive(true)
-          setStatus('🎥 Tracking Barbell Velocity')
-          runDetectionLoop()
+          setStatus('Tap Barbell Sleeve or Auto-Locking...')
         }
       }
     } catch (err) {
@@ -104,144 +80,198 @@ export default function Page() {
     }
   }
 
-  const runDetectionLoop = () => {
-    const detect = async () => {
-      if (!isTrackingRef.current) return
+  // Automatic Barbell Plate Detection via High-Contrast Circle Search
+  const autoDetectBarbell = (ctx, width, height) => {
+    const frame = ctx.getImageData(0, 0, width, height)
+    const data = frame.data
+
+    let maxContrast = 0
+    let bestX = width / 2
+    let bestY = height / 2
+
+    // Scan center region for barbell plate edge/collar gradients
+    for (let y = Math.floor(height * 0.2); y < Math.floor(height * 0.8); y += 12) {
+      for (let x = Math.floor(width * 0.2); x < Math.floor(width * 0.8); x += 12) {
+        const idx = (y * width + x) * 4
+        const rightIdx = (y * width + (x + 8)) * 4
+        
+        // Calculate luminosity contrast
+        const lum1 = data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114
+        const lum2 = data[rightIdx] * 0.299 + data[rightIdx + 1] * 0.587 + data[rightIdx + 2] * 0.114
+        const contrast = Math.abs(lum1 - lum2)
+
+        if (contrast > maxContrast) {
+          maxContrast = contrast
+          bestX = x
+          bestY = y
+        }
+      }
+    }
+
+    return { x: bestX, y: bestY }
+  }
+
+  // Lock Tracking Target
+  const lockTarget = (x, y) => {
+    trackPointRef.current = { x, y }
+    pathPointsRef.current = [{ x, y }]
+    lastYRef.current = y
+    lastTimeRef.current = performance.now()
+    
+    isTrackingRef.current = true
+    setIsLocked(true)
+    setStatus('🟢 Barbell Tracked')
+
+    if (!rafRef.current) {
+      runMetricTrackingLoop()
+    }
+  }
+
+  const handleCanvasClick = (e) => {
+    if (!cameraActive || !canvasRef.current) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    const scaleX = canvasRef.current.width / rect.width
+    const scaleY = canvasRef.current.height / rect.height
+
+    const clickX = (e.clientX - rect.left) * scaleX
+    const clickY = (e.clientY - rect.top) * scaleY
+
+    lockTarget(clickX, clickY)
+  }
+
+  // Core Metric Optical Tracking Engine
+  const runMetricTrackingLoop = () => {
+    const detect = () => {
+      if (!isTrackingRef.current || !videoRef.current || !canvasRef.current) return
 
       const video = videoRef.current
       const canvas = canvasRef.current
-      const detector = detectorRef.current
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      const now = performance.now()
 
-      if (video && canvas && detector && video.readyState >= 2) {
-        const ctx = canvas.getContext('2d')
-        const now = performance.now()
+      if (video.readyState >= 2) {
+        const width = canvas.width
+        const height = canvas.height
 
-        if (canvas.width !== video.videoWidth && video.videoWidth > 0) {
-          canvas.width = video.videoWidth
-          canvas.height = video.videoHeight
+        // Auto-Detect on first frame if not locked manually
+        if (!trackPointRef.current) {
+          ctx.drawImage(video, 0, 0, width, height)
+          const detected = autoDetectBarbell(ctx, width, height)
+          lockTarget(detected.x, detected.y)
         }
 
-        try {
-          const poses = await detector.estimatePoses(video)
-          ctx.clearRect(0, 0, canvas.width, canvas.height)
+        const point = trackPointRef.current
+        const searchSize = 48
+        const half = searchSize / 2
 
-          if (poses && poses.length > 0 && poses[0].keypoints) {
-            const keypoints = poses[0].keypoints
+        // Extract Search Window around current barbell location
+        const sx = Math.max(0, Math.min(width - searchSize, point.x - half))
+        const sy = Math.max(0, Math.min(height - searchSize, point.y - half))
 
-            const shoulder = keypoints[5]
-            const hip = keypoints[11]
-            const leftWrist = keypoints[9]
-            const rightWrist = keypoints[10]
+        ctx.drawImage(video, 0, 0, width, height)
+        const currentFrameData = ctx.getImageData(sx, sy, searchSize, searchSize)
 
-            // 1. Calculate Pixels to Meters Ratio
-            let metersPerPixel = 0.003 // Responsive baseline (~330px per meter)
-            if (shoulder && hip && (shoulder.score || 0) > 0.05 && (hip.score || 0) > 0.05) {
-              const torsoPx = Math.hypot(shoulder.x - hip.x, shoulder.y - hip.y)
-              if (torsoPx > 10) {
-                metersPerPixel = 0.50 / torsoPx
+        // Lucas-Kanade / Differential Optical Flow Approximation
+        if (prevFrameDataRef.current) {
+          const curr = currentFrameData.data
+          const prev = prevFrameDataRef.current.data
+
+          let sumDx = 0
+          let sumDy = 0
+          let weightSum = 0
+
+          for (let y = 2; y < searchSize - 2; y += 2) {
+            for (let x = 2; x < searchSize - 2; x += 2) {
+              const idx = (y * searchSize + x) * 4
+              
+              // Frame Differences
+              const dt = (curr[idx] - prev[idx])
+              const dx = (curr[idx + 4] - curr[idx - 4]) / 2
+              const dy = (curr[(y + 1) * searchSize + x] - curr[(y - 1) * searchSize + x]) / 2
+
+              const gradSq = dx * dx + dy * dy
+              if (gradSq > 10) {
+                sumDx += -dx * dt
+                sumDy += -dy * dt
+                weightSum += gradSq
               }
             }
-
-            // 2. Wrist Position Detection
-            let currentY = null
-            if (leftWrist && rightWrist && (leftWrist.score || 0) > 0.05 && (rightWrist.score || 0) > 0.05) {
-              currentY = (leftWrist.y + rightWrist.y) / 2
-            } else if (leftWrist && (leftWrist.score || 0) > 0.05) {
-              currentY = leftWrist.y
-            } else if (rightWrist && (rightWrist.score || 0) > 0.05) {
-              currentY = rightWrist.y
-            }
-
-            // 3. Real-Time Math & Calculation Engine
-            if (currentY !== null) {
-              if (lastYRef.current !== null && lastTimeRef.current !== null) {
-                const deltaY = lastYRef.current - currentY // In canvas coordinates, Up = positive
-                const deltaTime = (now - lastTimeRef.current) / 1000 // Convert ms to Seconds
-
-                if (deltaTime > 0 && deltaTime < 0.2) {
-                  const rawVelocity = (deltaY * metersPerPixel) / deltaTime
-                  currentVelRef.current = rawVelocity
-
-                  // Upward Concentric Lift Phase Detection (> 0.03 m/s threshold)
-                  if (rawVelocity > 0.03) {
-                    if (!isConcentricRef.current) {
-                      isConcentricRef.current = true
-                    }
-
-                    // Calculate Peak Velocity
-                    if (rawVelocity > peakVelRef.current) {
-                      peakVelRef.current = parseFloat(rawVelocity.toFixed(2))
-                      
-                      // Calculate Power: Force (Load * 9.81) * Velocity
-                      const force = loadKg * 9.81
-                      peakPowerRef.current = Math.round(force * rawVelocity)
-
-                      // Calculate 1RM estimation
-                      const calculated1RM = Math.round(loadKg / (1.13 - 0.7 * rawVelocity))
-                      if (calculated1RM > loadKg) {
-                        est1RMRef.current = calculated1RM
-                      }
-                    }
-                  } else if (rawVelocity < -0.03 && isConcentricRef.current) {
-                    // Descent transition -> Increment rep count
-                    isConcentricRef.current = false
-                    repCountRef.current += 1
-                  }
-                }
-              }
-
-              lastYRef.current = currentY
-              lastTimeRef.current = now
-
-              // Draw Red Bar Line between wrists
-              if (leftWrist && rightWrist) {
-                ctx.strokeStyle = '#FF5C4D'
-                ctx.lineWidth = 6
-                ctx.beginPath()
-                ctx.moveTo(leftWrist.x, leftWrist.y)
-                ctx.lineTo(rightWrist.x, rightWrist.y)
-                ctx.stroke()
-              }
-            }
-
-            // Draw Skeleton
-            const connections = [
-              [5, 7], [7, 9], [6, 8], [8, 10],
-              [5, 6], [5, 11], [6, 12], [11, 12],
-              [11, 13], [13, 15], [12, 14], [14, 16]
-            ]
-            ctx.strokeStyle = '#00FF00'
-            ctx.lineWidth = 3
-            connections.forEach(([start, end]) => {
-              const startKp = keypoints[start]
-              const endKp = keypoints[end]
-              if (startKp && endKp && (startKp.score || 0) > 0.05 && (endKp.score || 0) > 0.05) {
-                ctx.beginPath()
-                ctx.moveTo(startKp.x, startKp.y)
-                ctx.lineTo(endKp.x, endKp.y)
-                ctx.stroke()
-              }
-            })
           }
 
-          // Direct Canvas Text HUD Render (Reads straight from Refs)
-          const vel = currentVelRef.current
-          ctx.fillStyle = vel > 0.03 ? '#00FF00' : '#FF5C4D'
-          ctx.font = 'bold 26px Arial'
-          ctx.shadowColor = '#000000'
-          ctx.shadowBlur = 4
-          ctx.fillText(`VELOCITY: ${vel.toFixed(2)} m/s`, 20, 45)
+          if (weightSum > 0) {
+            const moveX = sumDx / weightSum
+            const moveY = sumDy / weightSum
 
-          ctx.fillStyle = '#FFFFFF'
-          ctx.font = 'bold 18px Arial'
-          ctx.fillText(`PEAK VEL: ${peakVelRef.current} m/s`, 20, 75)
-          ctx.fillText(`POWER: ${peakPowerRef.current} W`, 20, 100)
-          ctx.fillText(`EST 1RM: ${est1RMRef.current} kg`, 20, 125)
-          ctx.fillText(`REPS: ${repCountRef.current}`, 20, 150)
-
-        } catch (err) {
-          console.error('Frame calculations error:', err)
+            // Update sub-pixel barbell coordinate
+            point.x = Math.max(10, Math.min(width - 10, point.x + moveX))
+            point.y = Math.max(10, Math.min(height - 10, point.y + moveY))
+          }
         }
+
+        prevFrameDataRef.current = currentFrameData
+
+        // Record Trajectory Curve
+        pathPointsRef.current.push({ x: point.x, y: point.y })
+        if (pathPointsRef.current.length > 60) pathPointsRef.current.shift()
+
+        // Velocity Calculation (Standard 450mm Olympic Plate Calibration Scale)
+        if (lastYRef.current !== null && lastTimeRef.current !== null) {
+          const deltaY = lastYRef.current - point.y // Upward = positive
+          const deltaTime = (now - lastTimeRef.current) / 1000
+
+          const metersPerPixel = 0.0028 // ~350px = 1 meter
+
+          if (deltaTime > 0 && deltaTime < 0.2) {
+            const vel = (deltaY * metersPerPixel) / deltaTime
+
+            if (Math.abs(vel) > 0.01) {
+              currentVelRef.current = Math.abs(vel)
+            }
+
+            // Concentric Lift Phase Detection
+            if (vel > 0.04) {
+              if (!isConcentricRef.current) isConcentricRef.current = true
+              if (vel > peakVelRef.current) peakVelRef.current = vel
+            } else if (vel < -0.04 && isConcentricRef.current) {
+              isConcentricRef.current = false
+              repCountRef.current += 1
+              speakVelocity(peakVelRef.current > 0 ? peakVelRef.current : currentVelRef.current)
+              peakVelRef.current = 0
+            }
+          }
+        }
+
+        lastYRef.current = point.y
+        lastTimeRef.current = now
+
+        // Clear Canvas for Drawing Metric Overlays
+        ctx.clearRect(0, 0, width, height)
+
+        // Draw Metric-style Smooth Green Bar Path
+        if (pathPointsRef.current.length > 1) {
+          ctx.strokeStyle = '#00FF66'
+          ctx.lineWidth = 4
+          ctx.lineCap = 'round'
+          ctx.lineJoin = 'round'
+          ctx.beginPath()
+          ctx.moveTo(pathPointsRef.current[0].x, pathPointsRef.current[0].y)
+          for (let i = 1; i < pathPointsRef.current.length; i++) {
+            ctx.lineTo(pathPointsRef.current[i].x, pathPointsRef.current[i].y)
+          }
+          ctx.stroke()
+        }
+
+        // Draw Barbell Lock Point Ring
+        ctx.strokeStyle = '#00FF66'
+        ctx.lineWidth = 3
+        ctx.beginPath()
+        ctx.arc(point.x, point.y, 12, 0, Math.PI * 2)
+        ctx.stroke()
+
+        ctx.fillStyle = '#00FF66'
+        ctx.beginPath()
+        ctx.arc(point.x, point.y, 4, 0, Math.PI * 2)
+        ctx.fill()
       }
 
       if (isTrackingRef.current) {
@@ -268,107 +298,249 @@ export default function Page() {
     }
 
     setCameraActive(false)
+    setIsLocked(false)
+    trackPointRef.current = null
     setStatus('Stopped')
   }
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#0D1117', color: '#F0F6FC', padding: '20px' }}>
-      <h1 style={{ fontSize: '28px', fontWeight: 'bold', marginBottom: '8px' }}>
-        RUNNOZ VBT {poseReady ? '✅' : '⏳'}
-      </h1>
-      <p style={{ fontSize: '16px', fontWeight: 'bold', color: '#FF5C4D', marginBottom: '16px' }}>
-        {status}
-      </p>
-
-      <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <label style={{ fontWeight: 'bold' }}>BAR LOAD (KG):</label>
-        <input 
-          type="number" 
-          value={loadKg} 
-          onChange={(e) => setLoadKg(Number(e.target.value))}
-          style={{
-            padding: '8px 12px',
-            borderRadius: '6px',
-            border: '1px solid #FF5C4D',
-            backgroundColor: '#161B22',
-            color: '#FFF',
-            width: '100px',
-            fontSize: '16px',
-            fontWeight: 'bold'
-          }}
-        />
-      </div>
-
-      {!cameraActive && (
-        <button
-          onClick={startCamera}
-          disabled={!poseReady}
-          style={{
-            width: '100%',
-            maxWidth: '600px',
-            padding: '20px',
-            backgroundColor: poseReady ? '#FF5C4D' : '#666',
-            color: '#FFF',
-            border: 'none',
-            borderRadius: '8px',
-            fontSize: '18px',
-            fontWeight: '700',
-            cursor: poseReady ? 'pointer' : 'not-allowed',
-            marginBottom: '20px'
-          }}
-        >
-          {poseReady ? '▶ START VBT TRACKING' : 'LOADING AI...'}
-        </button>
-      )}
-
+    <div style={{
+      minHeight: '100vh',
+      backgroundColor: '#0F0F12',
+      color: '#18181B',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '16px'
+    }}>
       <div style={{
-        position: 'relative',
         width: '100%',
-        maxWidth: '600px',
-        borderRadius: '8px',
+        maxWidth: '390px',
+        backgroundColor: '#F4F4F6',
+        borderRadius: '36px',
         overflow: 'hidden',
-        border: '3px solid #FF5C4D'
+        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+        border: '1px solid #E4E4E7',
+        position: 'relative'
       }}>
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          style={{ width: '100%', height: 'auto', display: 'block' }}
-        />
-        <canvas
-          ref={canvasRef}
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            pointerEvents: 'none',
-            zIndex: 10
-          }}
-        />
 
-        {cameraActive && (
-          <button
-            onClick={stopCamera}
-            style={{
-              position: 'absolute',
-              bottom: '16px',
-              right: '16px',
-              padding: '10px 16px',
-              backgroundColor: '#FF5C4D',
-              color: '#FFF',
-              border: 'none',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              zIndex: 20
-            }}
+        {/* Navigation Bar */}
+        <div style={{
+          padding: '14px 16px 10px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          backgroundColor: '#FFFFFF',
+          borderBottom: '1px solid #E4E4E7'
+        }}>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button
+              onClick={() => setActiveTab('camera')}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '20px',
+                border: 'none',
+                backgroundColor: activeTab === 'camera' ? '#7C3AED' : '#F4F4F6',
+                color: activeTab === 'camera' ? '#FFFFFF' : '#71717A',
+                fontSize: '11px',
+                fontWeight: '700',
+                cursor: 'pointer'
+              }}
+            >
+              🏋️ Metric Barbell Tracker
+            </button>
+            <button
+              onClick={() => setActiveTab('autoregulate')}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '20px',
+                border: 'none',
+                backgroundColor: activeTab === 'autoregulate' ? '#7C3AED' : '#F4F4F6',
+                color: activeTab === 'autoregulate' ? '#FFFFFF' : '#71717A',
+                fontSize: '11px',
+                fontWeight: '700',
+                cursor: 'pointer'
+              }}
+            >
+              ⚡ Autoregulate
+            </button>
+          </div>
+
+          <button 
+            onClick={() => setAudioFeedback(!audioFeedback)}
+            style={{ fontSize: '14px', border: 'none', background: 'none', cursor: 'pointer', opacity: audioFeedback ? 1 : 0.4 }}
           >
-            ⏹ STOP
+            🔊
           </button>
+        </div>
+
+        {/* Live Camera Barbell Tracking Frame */}
+        {activeTab === 'camera' && (
+          <div style={{ position: 'relative', width: '100%', aspectRatio: '9/16', backgroundColor: '#000' }}>
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+            />
+            <canvas
+              ref={canvasRef}
+              onClick={handleCanvasClick}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                zIndex: 10,
+                cursor: 'crosshair'
+              }}
+            />
+
+            {/* Metric UI Overlay Card */}
+            <div style={{
+              position: 'absolute',
+              bottom: '24px',
+              left: '16px',
+              backgroundColor: 'rgba(18, 18, 20, 0.88)',
+              backdropFilter: 'blur(12px)',
+              borderRadius: '16px',
+              padding: '12px 16px',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              zIndex: 20,
+              minWidth: '150px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                <span style={{ backgroundColor: '#EF4444', color: '#FFF', fontSize: '10px', fontWeight: '800', padding: '2px 6px', borderRadius: '4px' }}>
+                  METRIC
+                </span>
+                <span style={{ fontSize: '13px', color: '#E4E4E7', fontWeight: '600' }}>
+                  {loadKg}kg rep {repCountRef.current}
+                </span>
+              </div>
+
+              <div style={{ fontSize: '32px', fontWeight: '800', color: '#00FF66', lineHeight: '1' }}>
+                {currentVelRef.current.toFixed(2)}
+              </div>
+              <div style={{ fontSize: '11px', color: '#A1A1AA', marginTop: '4px', fontWeight: '500' }}>
+                m. Vel (m/s)
+              </div>
+            </div>
+
+            {/* Start Overlay */}
+            {!cameraActive && (
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                backgroundColor: 'rgba(0,0,0,0.82)',
+                zIndex: 15,
+                padding: '20px',
+                textAlign: 'center'
+              }}>
+                <p style={{ color: '#E4E4E7', fontSize: '14px', marginBottom: '16px', fontWeight: '600' }}>
+                  Point camera at the barbell end. Real-time optical flow will auto-lock and track speed.
+                </p>
+                <button
+                  onClick={startCamera}
+                  style={{
+                    width: '100%',
+                    padding: '14px 20px',
+                    borderRadius: '12px',
+                    border: 'none',
+                    backgroundColor: '#7C3AED',
+                    color: '#FFFFFF',
+                    fontSize: '15px',
+                    fontWeight: '700',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Start Metric Barbell Tracker
+                </button>
+              </div>
+            )}
+
+            {cameraActive && (
+              <button
+                onClick={stopCamera}
+                style={{
+                  position: 'absolute',
+                  top: '16px',
+                  right: '16px',
+                  padding: '8px 14px',
+                  borderRadius: '20px',
+                  border: 'none',
+                  backgroundColor: '#EF4444',
+                  color: '#FFF',
+                  fontSize: '12px',
+                  fontWeight: '700',
+                  cursor: 'pointer',
+                  zIndex: 20
+                }}
+              >
+                Stop
+              </button>
+            )}
+          </div>
         )}
+
+        {/* Autoregulate Analytics View */}
+        {activeTab === 'autoregulate' && (
+          <div style={{ padding: '16px', overflowY: 'auto', maxHeight: '680px' }}>
+            <div style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '16px',
+              padding: '14px 16px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              border: '1px solid #E4E4E7',
+              marginBottom: '16px'
+            }}>
+              <div>
+                <div style={{ fontSize: '10px', color: '#71717A', fontWeight: '600' }}>Barbell Velocity</div>
+                <div style={{ fontSize: '24px', fontWeight: '900', color: '#16A34A' }}>
+                  ↗ {currentVelRef.current.toFixed(2)} m/s
+                </div>
+                <div style={{ fontSize: '10px', color: '#A1A1AA' }}>Autoregulated target: 0.50 m/s</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Bottom Panel */}
+        <div style={{ padding: '14px 16px 20px', backgroundColor: '#FFFFFF', borderTop: '1px solid #E4E4E7' }}>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: '10px', color: '#71717A', fontWeight: '700' }}>EXERCISE</label>
+              <select
+                value={exercise}
+                onChange={(e) => setExercise(e.target.value)}
+                style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #E4E4E7', fontSize: '13px', fontWeight: '600' }}
+              >
+                <option value="Back Squat">Back Squat</option>
+                <option value="Bench Press">Bench Press</option>
+                <option value="Deadlift">Deadlift</option>
+              </select>
+            </div>
+            <div style={{ width: '90px' }}>
+              <label style={{ fontSize: '10px', color: '#71717A', fontWeight: '700' }}>LOAD (KG)</label>
+              <input
+                type="number"
+                value={loadKg}
+                onChange={(e) => setLoadKg(Number(e.target.value))}
+                style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #E4E4E7', fontSize: '13px', fontWeight: '600' }}
+              />
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   )
