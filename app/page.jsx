@@ -9,8 +9,12 @@ export default function Page() {
   
   // VBT Settings
   const [loadKg, setLoadKg] = useState(100)
+  const [targetReps, setTargetReps] = useState(3)
   const [exercise, setExercise] = useState('Back Squat')
   const [audioFeedback, setAudioFeedback] = useState(true)
+
+  // Live Reps Captured State
+  const [capturedVelocities, setCapturedVelocities] = useState([])
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
@@ -28,7 +32,6 @@ export default function Page() {
   // Metrics Data
   const currentVelRef = useRef(0.00)
   const peakVelRef = useRef(0.00)
-  const repCountRef = useRef(0)
 
   // Voice Feedback
   const speakVelocity = (vel) => {
@@ -47,6 +50,14 @@ export default function Page() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
   }, [])
+
+  // Reset Captured Set Data
+  const resetSet = () => {
+    setCapturedVelocities([])
+    peakVelRef.current = 0
+    currentVelRef.current = 0
+    pathPointsRef.current = []
+  }
 
   // Start Video Stream
   const startCamera = async () => {
@@ -221,9 +232,13 @@ export default function Page() {
               if (!isConcentricRef.current) isConcentricRef.current = true
               if (vel > peakVelRef.current) peakVelRef.current = vel
             } else if (vel < -0.04 && isConcentricRef.current) {
+              // Rep Completed
               isConcentricRef.current = false
-              repCountRef.current += 1
-              speakVelocity(peakVelRef.current > 0 ? peakVelRef.current : currentVelRef.current)
+              const repVel = peakVelRef.current > 0 ? peakVelRef.current : currentVelRef.current
+              
+              // Append captured velocity to set list
+              setCapturedVelocities((prev) => [...prev, parseFloat(repVel.toFixed(2))])
+              speakVelocity(repVel)
               peakVelRef.current = 0
             }
           }
@@ -288,6 +303,11 @@ export default function Page() {
     setStatus('Stopped')
   }
 
+  // Velocity Loss Calculation
+  const firstRepVel = capturedVelocities.length > 0 ? capturedVelocities[0] : 0
+  const lastRepVel = capturedVelocities.length > 0 ? capturedVelocities[capturedVelocities.length - 1] : 0
+  const velLossPercent = firstRepVel > 0 ? Math.round(((firstRepVel - lastRepVel) / firstRepVel) * 100) : 0
+
   return (
     <div style={{
       minHeight: '100vh',
@@ -299,7 +319,7 @@ export default function Page() {
       width: '100vw',
       overflowX: 'hidden'
     }}>
-      {/* Top Header Controls Bar */}
+      {/* Top Header Bar */}
       <div style={{
         padding: '14px 20px',
         display: 'flex',
@@ -350,9 +370,9 @@ export default function Page() {
         </button>
       </div>
 
-      {/* Main Full-Screen Viewport */}
+      {/* Main Viewport */}
       {activeTab === 'camera' && (
-        <div style={{ position: 'relative', flex: 1, width: '100%', minHeight: 'calc(100vh - 130px)', backgroundColor: '#000' }}>
+        <div style={{ position: 'relative', flex: 1, width: '100%', minHeight: 'calc(100vh - 200px)', backgroundColor: '#000' }}>
           <video
             ref={videoRef}
             autoPlay
@@ -374,7 +394,7 @@ export default function Page() {
             }}
           />
 
-          {/* Metric UI Card Overlay */}
+          {/* Left Live Floating Metric Overlay Card */}
           <div style={{
             position: 'absolute',
             bottom: '24px',
@@ -392,7 +412,7 @@ export default function Page() {
                 METRIC
               </span>
               <span style={{ fontSize: '14px', color: '#E4E4E7', fontWeight: '600' }}>
-                {loadKg}kg rep {repCountRef.current}
+                {loadKg}kg rep {capturedVelocities.length}/{targetReps}
               </span>
             </div>
 
@@ -404,7 +424,73 @@ export default function Page() {
             </div>
           </div>
 
-          {/* Start Screen Overlay */}
+          {/* Right Live Captured Rep Velocity Chart Panel */}
+          <div style={{
+            position: 'absolute',
+            top: '24px',
+            right: '24px',
+            backgroundColor: 'rgba(18, 18, 20, 0.9)',
+            backdropFilter: 'blur(12px)',
+            borderRadius: '16px',
+            padding: '16px 20px',
+            border: '1px solid rgba(255, 255, 255, 0.12)',
+            zIndex: 20,
+            width: '260px'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontSize: '13px', fontWeight: '800', color: '#FFFFFF' }}>SET REPS VELOCITY</span>
+              <button 
+                onClick={resetSet} 
+                style={{ fontSize: '11px', backgroundColor: '#27272A', color: '#A1A1AA', border: 'none', padding: '4px 8px', borderRadius: '6px', cursor: 'pointer' }}
+              >
+                Clear
+              </button>
+            </div>
+
+            {/* Rep-by-Rep Bar Chart */}
+            <div style={{ display: 'flex', alignItems: 'flex-end', height: '90px', gap: '8px', marginBottom: '12px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '8px' }}>
+              {Array.from({ length: targetReps }).map((_, idx) => {
+                const vel = capturedVelocities[idx] || 0
+                const maxVel = Math.max(...capturedVelocities, 1.0)
+                const heightPercent = vel > 0 ? (vel / maxVel) * 100 : 0
+
+                return (
+                  <div key={idx} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}>
+                    <span style={{ fontSize: '10px', color: '#00FF66', fontWeight: '700', marginBottom: '4px' }}>
+                      {vel > 0 ? vel : ''}
+                    </span>
+                    <div style={{
+                      width: '100%',
+                      height: `${heightPercent}%`,
+                      backgroundColor: vel > 0 ? '#7C3AED' : '#27272A',
+                      borderRadius: '4px 4px 0 0',
+                      transition: 'height 0.3s'
+                    }} />
+                    <span style={{ fontSize: '10px', color: '#A1A1AA', marginTop: '4px' }}>R{idx + 1}</span>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Set Velocity Metrics Table */}
+            <div style={{ fontSize: '12px', color: '#E4E4E7' }}>
+              {capturedVelocities.map((vel, idx) => (
+                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
+                  <span style={{ color: '#A1A1AA' }}>Rep {idx + 1}:</span>
+                  <span style={{ fontWeight: '700', color: '#00FF66' }}>{vel} m/s</span>
+                </div>
+              ))}
+
+              {capturedVelocities.length > 1 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px', paddingTop: '6px', borderTop: '1px dashed rgba(255,255,255,0.15)', fontWeight: '700' }}>
+                  <span>Velocity Loss:</span>
+                  <span style={{ color: velLossPercent > 20 ? '#EF4444' : '#F59E0B' }}>{velLossPercent}%</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Start Overlay */}
           {!cameraActive && (
             <div style={{
               position: 'absolute',
@@ -414,12 +500,12 @@ export default function Page() {
               justifyContent: 'center',
               alignItems: 'center',
               backgroundColor: 'rgba(0,0,0,0.85)',
-              zIndex: 15,
+              zIndex: 25,
               padding: '24px',
               textAlign: 'center'
             }}>
               <p style={{ color: '#E4E4E7', fontSize: '16px', marginBottom: '20px', fontWeight: '600', maxWidth: '480px' }}>
-                Point your camera at the side end of the barbell. Real-time optical flow will auto-lock and track movement speed.
+                Point camera at barbell plate collar. Each rep velocity will automatically record into your set chart.
               </p>
               <button
                 onClick={startCamera}
@@ -445,7 +531,7 @@ export default function Page() {
               style={{
                 position: 'absolute',
                 top: '20px',
-                right: '20px',
+                left: '20px',
                 padding: '10px 18px',
                 borderRadius: '20px',
                 border: 'none',
@@ -454,7 +540,7 @@ export default function Page() {
                 fontSize: '13px',
                 fontWeight: '700',
                 cursor: 'pointer',
-                zIndex: 20
+                zIndex: 30
               }}
             >
               Stop
@@ -480,15 +566,15 @@ export default function Page() {
             <div>
               <div style={{ fontSize: '12px', color: '#71717A', fontWeight: '600' }}>Barbell Velocity</div>
               <div style={{ fontSize: '28px', fontWeight: '900', color: '#16A34A' }}>
-                ↗ {currentVelRef.current.toFixed(2)} m/s
+                ↗ {capturedVelocities.length > 0 ? capturedVelocities[capturedVelocities.length - 1] : '0.00'} m/s
               </div>
-              <div style={{ fontSize: '12px', color: '#A1A1AA' }}>Autoregulated target: 0.50 m/s</div>
+              <div style={{ fontSize: '12px', color: '#A1A1AA' }}>Target reps: {targetReps}</div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Bottom Exercise Settings Panel */}
+      {/* Bottom Configuration Panel */}
       <div style={{ padding: '16px 24px', backgroundColor: '#FFFFFF', borderTop: '1px solid #E4E4E7', zIndex: 30 }}>
         <div style={{ display: 'flex', gap: '16px', alignItems: 'center', maxWidth: '600px', margin: '0 auto' }}>
           <div style={{ flex: 1 }}>
@@ -503,7 +589,18 @@ export default function Page() {
               <option value="Deadlift">Deadlift</option>
             </select>
           </div>
-          <div style={{ width: '120px' }}>
+
+          <div style={{ width: '100px' }}>
+            <label style={{ fontSize: '11px', color: '#71717A', fontWeight: '700', display: 'block', marginBottom: '4px' }}>TARGET REPS</label>
+            <input
+              type="number"
+              value={targetReps}
+              onChange={(e) => setTargetReps(Number(e.target.value))}
+              style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #E4E4E7', fontSize: '14px', fontWeight: '600' }}
+            />
+          </div>
+
+          <div style={{ width: '100px' }}>
             <label style={{ fontSize: '11px', color: '#71717A', fontWeight: '700', display: 'block', marginBottom: '4px' }}>LOAD (KG)</label>
             <input
               type="number"
