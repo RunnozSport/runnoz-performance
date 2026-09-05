@@ -13,6 +13,7 @@ export default function Page() {
 
   // Tracker State
   const [cameraActive, setCameraActive] = useState(false)
+  const [cameraError, setCameraError] = useState('')
   const [isPlateDetected, setIsPlateDetected] = useState(false)
   const [isReady, setIsReady] = useState(false)
 
@@ -58,11 +59,19 @@ export default function Page() {
     }
   }, [])
 
-  // Start Camera
+  // Start Camera with immediate UI state switch & fallback handling
   const startCamera = async () => {
+    setCameraError('')
+    setStep('align') // Switch view IMMEDIATELY so page changes without getting stuck
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'environment', frameRate: { ideal: 60 } },
+        video: { 
+          width: { ideal: 1280 }, 
+          height: { ideal: 720 }, 
+          facingMode: { ideal: 'environment' }, 
+          frameRate: { ideal: 60 } 
+        },
         audio: false
       })
 
@@ -75,17 +84,17 @@ export default function Page() {
             canvasRef.current.height = videoRef.current.videoHeight || 720
           }
           setCameraActive(true)
-          setStep('align')
           isTrackingRef.current = true
           runPlateDetectionLoop()
         }
       }
     } catch (err) {
       console.error('Camera access error:', err)
+      setCameraError('Camera access denied or unavailable: ' + err.message)
     }
   }
 
-  // Fast Circular Plate Search Engine
+  // Circular Plate Search Engine
   const detectPlateHub = (video, displayWidth, displayHeight) => {
     const procCanvas = procCanvasRef.current
     if (!procCanvas) return null
@@ -152,14 +161,12 @@ export default function Page() {
 
         const detected = detectPlateHub(video, width, height)
 
-        // Determine if weight plate is cleanly captured
         const hasValidLock = detected && detected.confidence > 22
         setIsPlateDetected(hasValidLock)
 
         if (hasValidLock) {
           rawCenterRef.current = { x: detected.x, y: detected.y }
 
-          // Exponential Moving Average (EMA) Smoothing filter
           if (!plateCenterRef.current) {
             plateCenterRef.current = { x: detected.x, y: detected.y, radius: 28 }
           } else {
@@ -172,7 +179,6 @@ export default function Page() {
         const plate = plateCenterRef.current
 
         if (plate) {
-          // If in active recording mode, perform trajectory math and count reps up to target
           if (step === 'recording') {
             pathPointsRef.current.push({ x: plate.x, y: plate.y })
             if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
@@ -202,7 +208,6 @@ export default function Page() {
                       { rep: prev.length + 1, vel: parseFloat(repVel.toFixed(2)), eccn: 0.6, rom: 55 }
                     ]
 
-                    // AUTO-STOP when target reps reached!
                     if (newReps.length >= targetReps) {
                       setTimeout(() => finishRecording(newReps), 100)
                     }
@@ -220,10 +225,8 @@ export default function Page() {
             lastTimeRef.current = now
           }
 
-          // Clear Canvas & Render Indicator
           ctx.clearRect(0, 0, width, height)
 
-          // 1. Draw Dotted Trajectory Green Path when recording
           if (step === 'recording' && pathPointsRef.current.length > 1) {
             ctx.strokeStyle = '#00FF66'
             ctx.lineWidth = 5
@@ -239,7 +242,6 @@ export default function Page() {
             ctx.setLineDash([])
           }
 
-          // 2. Draw Target Circle: GREEN if managed to trace weight plate, RED if scanning/lost
           const targetColor = hasValidLock ? '#00FF66' : '#EF4444'
 
           ctx.strokeStyle = targetColor
@@ -410,7 +412,15 @@ export default function Page() {
             <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10 }} />
 
-            {/* Dynamic Color Lock Status Badge */}
+            {/* Error Overlay Message */}
+            {cameraError && (
+              <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 40, padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center' }}>
+                <p style={{ color: '#EF4444', fontWeight: '700', marginBottom: '16px' }}>{cameraError}</p>
+                <button onClick={resetAll} style={{ padding: '10px 20px', backgroundColor: '#27272A', color: '#FFF', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>Back to Setup</button>
+              </div>
+            )}
+
+            {/* Dynamic Lock Badge */}
             <div style={{
               position: 'absolute',
               top: '12px',
@@ -455,8 +465,8 @@ export default function Page() {
               </div>
             </div>
 
-            {/* Controls Overlay: READY & RECORD BUTTON FLOW */}
-            {step === 'align' && (
+            {/* READY & RECORD BUTTON FLOW */}
+            {step === 'align' && !cameraError && (
               <div style={{ position: 'absolute', bottom: '16px', right: '16px', zIndex: 30, display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {!isReady ? (
                   <button
@@ -484,8 +494,7 @@ export default function Page() {
                       backgroundColor: '#EF4444',
                       color: '#FFF',
                       fontWeight: '800',
-                      cursor: 'pointer',
-                      animation: 'pulse 1.5s infinite'
+                      cursor: 'pointer'
                     }}
                   >
                     ⏺ RECORD SET
@@ -515,61 +524,55 @@ export default function Page() {
       )}
 
       {/* STEP 4: SUMMARY & ANALYTICS VIEW */}
-      {repData.length > 0 && (
-        <>
-          {/* Mean Velocity Stats */}
-          <div style={{ padding: '20px 16px 0', marginBottom: '16px' }}>
-            <div style={{ fontSize: '18px', fontWeight: '800', color: '#EF4444', marginBottom: '12px' }}>
-              Mean velocity ▼
-            </div>
+      {step === 'summary' && repData.length > 0 && (
+        <div style={{ padding: '20px 16px 0' }}>
+          <div style={{ fontSize: '18px', fontWeight: '800', color: '#EF4444', marginBottom: '12px' }}>
+            Mean velocity ▼
+          </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', borderLeft: '1px solid #27272A', paddingLeft: '12px' }}>
-              <div>
-                <div style={{ fontSize: '11px', color: '#71717A' }}>Best rep</div>
-                <div style={{ fontSize: '20px', fontWeight: '800', color: '#FFF' }}>{bestRep} <span style={{ fontSize: '12px' }}>m/s</span></div>
-              </div>
-              <div>
-                <div style={{ fontSize: '11px', color: '#71717A' }}>Set average</div>
-                <div style={{ fontSize: '20px', fontWeight: '800', color: '#FFF' }}>{setAvg} <span style={{ fontSize: '12px' }}>m/s</span></div>
-              </div>
-              <div>
-                <div style={{ fontSize: '11px', color: '#71717A' }}>Fatigue ⇄</div>
-                <div style={{ fontSize: '20px', fontWeight: '800', color: '#FFF' }}>{fatigue}%</div>
-              </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', borderLeft: '1px solid #27272A', paddingLeft: '12px', marginBottom: '20px' }}>
+            <div>
+              <div style={{ fontSize: '11px', color: '#71717A' }}>Best rep</div>
+              <div style={{ fontSize: '20px', fontWeight: '800', color: '#FFF' }}>{bestRep} <span style={{ fontSize: '12px' }}>m/s</span></div>
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: '#71717A' }}>Set average</div>
+              <div style={{ fontSize: '20px', fontWeight: '800', color: '#FFF' }}>{setAvg} <span style={{ fontSize: '12px' }}>m/s</span></div>
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: '#71717A' }}>Fatigue ⇄</div>
+              <div style={{ fontSize: '20px', fontWeight: '800', color: '#FFF' }}>{fatigue}%</div>
             </div>
           </div>
 
-          {/* Bar Chart & Table */}
-          <div style={{ padding: '0 16px', marginBottom: '24px' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-end', height: '140px', gap: '16px', padding: '0 16px 12px', borderBottom: '1px solid #27272A' }}>
-              {repData.map((item, idx) => (
-                <div key={idx} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}>
-                  <span style={{ fontSize: '11px', color: '#A1A1AA', marginBottom: '6px' }}>{item.vel}</span>
-                  <div style={{ width: '100%', height: `${(item.vel / 1.0) * 100}%`, backgroundColor: '#EF4444', borderRadius: '6px 6px 0 0' }} />
-                  <span style={{ fontSize: '11px', color: '#71717A', marginTop: '6px' }}>{item.rep}</span>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '30px 1fr 1fr 1fr 30px', fontSize: '12px', color: '#71717A', padding: '12px 0 8px', textAlign: 'center' }}>
-              <div></div>
-              <div>Mean Vel<br/><span style={{ fontSize: '10px' }}>m/s</span></div>
-              <div>Eccn<br/><span style={{ fontSize: '10px' }}>sec</span></div>
-              <div>ROM<br/><span style={{ fontSize: '10px' }}>cm</span></div>
-              <div></div>
-            </div>
-
-            {repData.map((item) => (
-              <div key={item.rep} style={{ display: 'grid', gridTemplateColumns: '30px 1fr 1fr 1fr 30px', fontSize: '14px', fontWeight: '700', color: '#FFF', padding: '10px 0', borderTop: '1px solid #1C1C1F', textAlign: 'center', alignItems: 'center' }}>
-                <div style={{ color: '#71717A', fontSize: '12px' }}>{item.rep}</div>
-                <div>{item.vel.toFixed(2)}</div>
-                <div>{item.eccn.toFixed(1)}</div>
-                <div>{item.rom}</div>
-                <div style={{ color: '#71717A', cursor: 'pointer' }}>⊖</div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', height: '140px', gap: '16px', padding: '0 16px 12px', borderBottom: '1px solid #27272A' }}>
+            {repData.map((item, idx) => (
+              <div key={idx} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}>
+                <span style={{ fontSize: '11px', color: '#A1A1AA', marginBottom: '6px' }}>{item.vel}</span>
+                <div style={{ width: '100%', height: `${(item.vel / 1.0) * 100}%`, backgroundColor: '#EF4444', borderRadius: '6px 6px 0 0' }} />
+                <span style={{ fontSize: '11px', color: '#71717A', marginTop: '6px' }}>{item.rep}</span>
               </div>
             ))}
           </div>
-        </>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '30px 1fr 1fr 1fr 30px', fontSize: '12px', color: '#71717A', padding: '12px 0 8px', textAlign: 'center' }}>
+            <div></div>
+            <div>Mean Vel<br/><span style={{ fontSize: '10px' }}>m/s</span></div>
+            <div>Eccn<br/><span style={{ fontSize: '10px' }}>sec</span></div>
+            <div>ROM<br/><span style={{ fontSize: '10px' }}>cm</span></div>
+            <div></div>
+          </div>
+
+          {repData.map((item) => (
+            <div key={item.rep} style={{ display: 'grid', gridTemplateColumns: '30px 1fr 1fr 1fr 30px', fontSize: '14px', fontWeight: '700', color: '#FFF', padding: '10px 0', borderTop: '1px solid #1C1C1F', textAlign: 'center', alignItems: 'center' }}>
+              <div style={{ color: '#71717A', fontSize: '12px' }}>{item.rep}</div>
+              <div>{item.vel.toFixed(2)}</div>
+              <div>{item.eccn.toFixed(1)}</div>
+              <div>{item.rom}</div>
+              <div style={{ color: '#71717A', cursor: 'pointer' }}>⊖</div>
+            </div>
+          ))}
+        </div>
       )}
 
       {/* Floating Action Button */}
