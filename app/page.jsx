@@ -2,33 +2,27 @@
 import { useState, useRef, useEffect } from 'react'
 
 export default function Page() {
-  // Workflow Steps: 'setup' | 'align' | 'recording' | 'summary'
   const [step, setStep] = useState('setup')
-  
-  // Workout Configuration
   const [exercise, setExercise] = useState('Back Squat - High Bar')
   const [loadKg, setLoadKg] = useState(10)
   const [targetReps, setTargetReps] = useState(3)
   const [audioFeedback, setAudioFeedback] = useState(true)
 
-  // Tracker State
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraError, setCameraError] = useState('')
   const [isPlateDetected, setIsPlateDetected] = useState(false)
   const [isReady, setIsReady] = useState(false)
 
-  // Recorded Sets Data
   const [repData, setRepData] = useState([])
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const procCanvasRef = useRef(null)
+  const modelRef = useRef(null)
   const rafRef = useRef(null)
   const isTrackingRef = useRef(false)
 
   // Motion Math Variables
-  const plateCenterRef = useRef(null)
-  const rawCenterRef = useRef(null)
+  const plateBBoxRef = useRef(null) // { x, y, width, height }
   const lastYRef = useRef(null)
   const lastTimeRef = useRef(null)
   const pathPointsRef = useRef([])
@@ -37,7 +31,6 @@ export default function Page() {
   const currentVelRef = useRef(0.00)
   const peakVelRef = useRef(0.00)
 
-  // Speech Output
   const speakVelocity = (vel) => {
     if (!audioFeedback || typeof window === 'undefined') return
     if ('speechSynthesis' in window) {
@@ -48,10 +41,20 @@ export default function Page() {
     }
   }
 
+  // Load COCO-SSD Neural Network Model for Auto Object Detection
   useEffect(() => {
-    procCanvasRef.current = document.createElement('canvas')
-    procCanvasRef.current.width = 320
-    procCanvasRef.current.height = 180
+    const loadAIModel = async () => {
+      try {
+        const tf = await import('@tensorflow/tfjs')
+        const cocoSsd = await import('@tensorflow-models/coco-ssd')
+        await tf.ready()
+        const loadedModel = await cocoSsd.load()
+        modelRef.current = loadedModel
+      } catch (err) {
+        console.error('Failed to load AI Model:', err)
+      }
+    }
+    loadAIModel()
 
     return () => {
       isTrackingRef.current = false
@@ -59,10 +62,9 @@ export default function Page() {
     }
   }, [])
 
-  // Start Camera with immediate UI state switch & fallback handling
   const startCamera = async () => {
     setCameraError('')
-    setStep('align') // Switch view IMMEDIATELY so page changes without getting stuck
+    setStep('align')
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -85,69 +87,18 @@ export default function Page() {
           }
           setCameraActive(true)
           isTrackingRef.current = true
-          runPlateDetectionLoop()
+          runObjectDetectionLoop()
         }
       }
     } catch (err) {
-      console.error('Camera access error:', err)
-      setCameraError('Camera access denied or unavailable: ' + err.message)
+      console.error('Camera error:', err)
+      setCameraError('Camera error: ' + err.message)
     }
   }
 
-  // Circular Plate Search Engine
-  const detectPlateHub = (video, displayWidth, displayHeight) => {
-    const procCanvas = procCanvasRef.current
-    if (!procCanvas) return null
-
-    const pCtx = procCanvas.getContext('2d', { willReadFrequently: true })
-    const pW = procCanvas.width
-    const pH = procCanvas.height
-
-    pCtx.drawImage(video, 0, 0, pW, pH)
-    const imgData = pCtx.getImageData(0, 0, pW, pH)
-    const data = imgData.data
-
-    let maxGradient = 0
-    let bestX = pW / 2
-    let bestY = pH / 2
-
-    const lastPos = rawCenterRef.current
-    const startX = lastPos ? Math.max(10, Math.floor((lastPos.x / displayWidth) * pW) - 30) : Math.floor(pW * 0.2)
-    const endX = lastPos ? Math.min(pW - 10, Math.floor((lastPos.x / displayWidth) * pW) + 30) : Math.floor(pW * 0.8)
-    const startY = lastPos ? Math.max(10, Math.floor((lastPos.y / displayHeight) * pH) - 30) : Math.floor(pH * 0.2)
-    const endY = lastPos ? Math.min(pH - 10, Math.floor((lastPos.y / displayHeight) * pH) + 30) : Math.floor(pH * 0.8)
-
-    for (let y = startY; y < endY; y += 2) {
-      for (let x = startX; x < endX; x += 2) {
-        const idx = (y * pW + x) * 4
-
-        const lum = data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114
-        const rightLum = data[idx + 8] * 0.299 + data[idx + 9] * 0.587 + data[idx + 10] * 0.114
-        const bottomLum = data[((y + 2) * pW + x) * 4] * 0.299
-
-        const grad = Math.abs(lum - rightLum) + Math.abs(lum - bottomLum)
-
-        if (grad > maxGradient) {
-          maxGradient = grad
-          bestX = x
-          bestY = y
-        }
-      }
-    }
-
-    const scaleX = displayWidth / pW
-    const scaleY = displayHeight / pH
-
-    return {
-      x: bestX * scaleX,
-      y: bestY * scaleY,
-      confidence: maxGradient
-    }
-  }
-
-  // 60 FPS Optical Engine
-  const runPlateDetectionLoop = () => {
-    const detect = () => {
+  // 60 FPS Object & Plate Detection Engine
+  const runObjectDetectionLoop = () => {
+    const detect = async () => {
       if (!isTrackingRef.current || !videoRef.current || !canvasRef.current) return
 
       const video = videoRef.current
@@ -159,26 +110,71 @@ export default function Page() {
         const width = canvas.width
         const height = canvas.height
 
-        const detected = detectPlateHub(video, width, height)
+        // 1. Run Auto Object Detection on video frame
+        let detectedPlate = null
 
-        const hasValidLock = detected && detected.confidence > 22
-        setIsPlateDetected(hasValidLock)
+        if (modelRef.current) {
+          try {
+            const predictions = await modelRef.current.detect(video)
+            
+            // Filter for round objects (sports ball / disk / frisbee / bowl / bottle cap) or circular contours
+            const platePrediction = predictions.find(
+              (p) => ['sports ball', 'disc', 'bowl', 'clock', 'apple', 'orange'].includes(p.class) || p.score > 0.4
+            )
 
-        if (hasValidLock) {
-          rawCenterRef.current = { x: detected.x, y: detected.y }
-
-          if (!plateCenterRef.current) {
-            plateCenterRef.current = { x: detected.x, y: detected.y, radius: 28 }
-          } else {
-            const alpha = 0.35
-            plateCenterRef.current.x = plateCenterRef.current.x + alpha * (detected.x - plateCenterRef.current.x)
-            plateCenterRef.current.y = plateCenterRef.current.y + alpha * (detected.y - plateCenterRef.current.y)
+            if (platePrediction) {
+              const [bx, by, bw, bh] = platePrediction.bbox
+              detectedPlate = {
+                x: bx + bw / 2,
+                y: by + bh / 2,
+                radius: Math.max(bw, bh) / 2
+              }
+            }
+          } catch (e) {
+            // Fallback edge scan
           }
         }
 
-        const plate = plateCenterRef.current
+        // Fallback: If AI hasn't loaded yet, detect largest circular gradient automatically
+        if (!detectedPlate) {
+          const imgData = ctx.getImageData(width * 0.2, height * 0.2, width * 0.6, height * 0.6)
+          let maxG = 0
+          let bestX = width / 2
+          let bestY = height / 2
 
-        if (plate) {
+          for (let y = 10; y < height * 0.6 - 10; y += 12) {
+            for (let x = 10; x < width * 0.6 - 10; x += 12) {
+              const idx = (Math.floor(y) * Math.floor(width * 0.6) + Math.floor(x)) * 4
+              const diff = Math.abs(imgData.data[idx] - imgData.data[idx + 16])
+              if (diff > maxG) {
+                maxG = diff
+                bestX = width * 0.2 + x
+                bestY = height * 0.2 + y
+              }
+            }
+          }
+
+          if (maxG > 20) {
+            detectedPlate = { x: bestX, y: bestY, radius: 28 }
+          }
+        }
+
+        const isLocked = !!detectedPlate
+        setIsPlateDetected(isLocked)
+
+        if (detectedPlate) {
+          // Smooth center coordinate (EMA Filter)
+          if (!plateBBoxRef.current) {
+            plateBBoxRef.current = detectedPlate
+          } else {
+            const alpha = 0.35
+            plateBBoxRef.current.x += alpha * (detectedPlate.x - plateBBoxRef.current.x)
+            plateBBoxRef.current.y += alpha * (detectedPlate.y - plateBBoxRef.current.y)
+            plateBBoxRef.current.radius = detectedPlate.radius || 28
+          }
+
+          const plate = plateBBoxRef.current
+
           if (step === 'recording') {
             pathPointsRef.current.push({ x: plate.x, y: plate.y })
             if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
@@ -227,6 +223,7 @@ export default function Page() {
 
           ctx.clearRect(0, 0, width, height)
 
+          // 1. Draw Green Dotted Line Trajectory
           if (step === 'recording' && pathPointsRef.current.length > 1) {
             ctx.strokeStyle = '#00FF66'
             ctx.lineWidth = 5
@@ -242,7 +239,8 @@ export default function Page() {
             ctx.setLineDash([])
           }
 
-          const targetColor = hasValidLock ? '#00FF66' : '#EF4444'
+          // 2. Draw Target Circle around Whole Weight Plate
+          const targetColor = isLocked ? '#00FF66' : '#EF4444'
 
           ctx.strokeStyle = targetColor
           ctx.lineWidth = 4
@@ -296,8 +294,7 @@ export default function Page() {
     setCameraActive(false)
     setIsPlateDetected(false)
     setIsReady(false)
-    plateCenterRef.current = null
-    rawCenterRef.current = null
+    plateBBoxRef.current = null
   }
 
   const resetAll = () => {
@@ -412,7 +409,7 @@ export default function Page() {
             <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10 }} />
 
-            {/* Error Overlay Message */}
+            {/* Camera Error Message */}
             {cameraError && (
               <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 40, padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center' }}>
                 <p style={{ color: '#EF4444', fontWeight: '700', marginBottom: '16px' }}>{cameraError}</p>
@@ -434,7 +431,7 @@ export default function Page() {
               borderRadius: '20px',
               zIndex: 20
             }}>
-              {isPlateDetected ? '🟢 WEIGHT PLATE DETECTED' : '🔴 SEARCHING WEIGHT PLATE...'}
+              {isPlateDetected ? '🟢 WEIGHT PLATE DETECTED' : '🔴 AUTO SCANNING PLATE...'}
             </div>
 
             {/* Metric Floating Card */}
