@@ -2,17 +2,22 @@
 import { useState, useRef, useEffect } from 'react'
 
 export default function Page() {
+  // Workflow Steps: 'setup' | 'align' | 'recording' | 'summary'
   const [step, setStep] = useState('setup')
+  
+  // Workout Configuration
   const [exercise, setExercise] = useState('Back Squat - High Bar')
   const [loadKg, setLoadKg] = useState(10)
   const [targetReps, setTargetReps] = useState(3)
   const [audioFeedback, setAudioFeedback] = useState(true)
 
+  // Tracker State
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraError, setCameraError] = useState('')
   const [isPlateDetected, setIsPlateDetected] = useState(false)
   const [isReady, setIsReady] = useState(false)
 
+  // Recorded Sets Data
   const [repData, setRepData] = useState([])
 
   const videoRef = useRef(null)
@@ -22,7 +27,7 @@ export default function Page() {
   const isTrackingRef = useRef(false)
 
   // Motion Math Variables
-  const plateBBoxRef = useRef(null) // { x, y, width, height }
+  const plateBBoxRef = useRef(null) // { x, y, radius }
   const lastYRef = useRef(null)
   const lastTimeRef = useRef(null)
   const pathPointsRef = useRef([])
@@ -31,6 +36,7 @@ export default function Page() {
   const currentVelRef = useRef(0.00)
   const peakVelRef = useRef(0.00)
 
+  // Speech Output
   const speakVelocity = (vel) => {
     if (!audioFeedback || typeof window === 'undefined') return
     if ('speechSynthesis' in window) {
@@ -41,7 +47,7 @@ export default function Page() {
     }
   }
 
-  // Load COCO-SSD Neural Network Model for Auto Object Detection
+  // Load COCO-SSD Model dynamically
   useEffect(() => {
     const loadAIModel = async () => {
       try {
@@ -110,14 +116,12 @@ export default function Page() {
         const width = canvas.width
         const height = canvas.height
 
-        // 1. Run Auto Object Detection on video frame
         let detectedPlate = null
 
         if (modelRef.current) {
           try {
             const predictions = await modelRef.current.detect(video)
             
-            // Filter for round objects (sports ball / disk / frisbee / bowl / bottle cap) or circular contours
             const platePrediction = predictions.find(
               (p) => ['sports ball', 'disc', 'bowl', 'clock', 'apple', 'orange'].includes(p.class) || p.score > 0.4
             )
@@ -131,11 +135,11 @@ export default function Page() {
               }
             }
           } catch (e) {
-            // Fallback edge scan
+            // Fallback
           }
         }
 
-        // Fallback: If AI hasn't loaded yet, detect largest circular gradient automatically
+        // Fallback Circular Gradient Detector if AI model is loading
         if (!detectedPlate) {
           const imgData = ctx.getImageData(width * 0.2, height * 0.2, width * 0.6, height * 0.6)
           let maxG = 0
@@ -163,7 +167,6 @@ export default function Page() {
         setIsPlateDetected(isLocked)
 
         if (detectedPlate) {
-          // Smooth center coordinate (EMA Filter)
           if (!plateBBoxRef.current) {
             plateBBoxRef.current = detectedPlate
           } else {
@@ -175,12 +178,13 @@ export default function Page() {
 
           const plate = plateBBoxRef.current
 
-          if (step === 'recording') {
+          // Check if user is in active recording mode
+          if (isTrackingRef.current && (lastYRef.current !== null)) {
             pathPointsRef.current.push({ x: plate.x, y: plate.y })
             if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
 
-            if (lastYRef.current !== null && lastTimeRef.current !== null) {
-              const deltaY = lastYRef.current - plate.y
+            if (lastTimeRef.current !== null) {
+              const deltaY = lastYRef.current - plate.y // Upward motion = positive
               const deltaTime = (now - lastTimeRef.current) / 1000
               const metersPerPixel = 0.0028
 
@@ -205,7 +209,7 @@ export default function Page() {
                     ]
 
                     if (newReps.length >= targetReps) {
-                      setTimeout(() => finishRecording(newReps), 100)
+                      setTimeout(() => finishRecording(), 100)
                     }
 
                     return newReps
@@ -216,15 +220,15 @@ export default function Page() {
                 }
               }
             }
-
-            lastYRef.current = plate.y
-            lastTimeRef.current = now
           }
+
+          lastYRef.current = plate.y
+          lastTimeRef.current = now
 
           ctx.clearRect(0, 0, width, height)
 
-          // 1. Draw Green Dotted Line Trajectory
-          if (step === 'recording' && pathPointsRef.current.length > 1) {
+          // 1. Draw Dotted Trajectory Green Path
+          if (pathPointsRef.current.length > 1) {
             ctx.strokeStyle = '#00FF66'
             ctx.lineWidth = 5
             ctx.lineCap = 'round'
@@ -239,7 +243,7 @@ export default function Page() {
             ctx.setLineDash([])
           }
 
-          // 2. Draw Target Circle around Whole Weight Plate
+          // 2. Draw Target Circle: Green when locked, Red when scanning
           const targetColor = isLocked ? '#00FF66' : '#EF4444'
 
           ctx.strokeStyle = targetColor
@@ -263,15 +267,23 @@ export default function Page() {
     detect()
   }
 
+  // FIX: Explicitly initialize timestamps and set state on record click
   const handleStartRecording = () => {
     setRepData([])
     pathPointsRef.current = []
     currentVelRef.current = 0
     peakVelRef.current = 0
+
+    // Initialize math reference points
+    if (plateBBoxRef.current) {
+      lastYRef.current = plateBBoxRef.current.y
+    }
+    lastTimeRef.current = performance.now()
+    
     setStep('recording')
   }
 
-  const finishRecording = (finalReps) => {
+  const finishRecording = () => {
     stopCamera()
     setStep('summary')
   }
@@ -409,7 +421,7 @@ export default function Page() {
             <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10 }} />
 
-            {/* Camera Error Message */}
+            {/* Error Message Overlay */}
             {cameraError && (
               <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 40, padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center' }}>
                 <p style={{ color: '#EF4444', fontWeight: '700', marginBottom: '16px' }}>{cameraError}</p>
@@ -431,7 +443,7 @@ export default function Page() {
               borderRadius: '20px',
               zIndex: 20
             }}>
-              {isPlateDetected ? '🟢 WEIGHT PLATE DETECTED' : '🔴 AUTO SCANNING PLATE...'}
+              {isPlateDetected ? '🟢 WEIGHT PLATE DETECTED' : '🔴 SCANNING WEIGHT PLATE...'}
             </div>
 
             {/* Metric Floating Card */}
