@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from 'react'
 
 export default function Page() {
-  // Workflow Steps: 'setup' | 'align' | 'recording' | 'summary'
+  // Workflow Steps: 'setup' | 'align' | 'ready' | 'recording' | 'summary'
   const [step, setStep] = useState('setup')
   
   // Workout Configuration
@@ -15,7 +15,6 @@ export default function Page() {
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraError, setCameraError] = useState('')
   const [isPlateDetected, setIsPlateDetected] = useState(false)
-  const [isReady, setIsReady] = useState(false)
 
   // Recorded Sets Data
   const [repData, setRepData] = useState([])
@@ -27,7 +26,7 @@ export default function Page() {
   const isTrackingRef = useRef(false)
 
   // Motion Math Variables
-  const plateBBoxRef = useRef(null) // { x, y, radius }
+  const plateBBoxRef = useRef(null)
   const lastYRef = useRef(null)
   const lastTimeRef = useRef(null)
   const pathPointsRef = useRef([])
@@ -47,7 +46,7 @@ export default function Page() {
     }
   }
 
-  // Load COCO-SSD Model dynamically
+  // Load COCO-SSD Neural Network Model
   useEffect(() => {
     const loadAIModel = async () => {
       try {
@@ -68,6 +67,7 @@ export default function Page() {
     }
   }, [])
 
+  // Start Camera
   const startCamera = async () => {
     setCameraError('')
     setStep('align')
@@ -102,7 +102,7 @@ export default function Page() {
     }
   }
 
-  // 60 FPS Object & Plate Detection Engine
+  // 60 FPS Detection Engine
   const runObjectDetectionLoop = () => {
     const detect = async () => {
       if (!isTrackingRef.current || !videoRef.current || !canvasRef.current) return
@@ -121,7 +121,6 @@ export default function Page() {
         if (modelRef.current) {
           try {
             const predictions = await modelRef.current.detect(video)
-            
             const platePrediction = predictions.find(
               (p) => ['sports ball', 'disc', 'bowl', 'clock', 'apple', 'orange'].includes(p.class) || p.score > 0.4
             )
@@ -178,13 +177,13 @@ export default function Page() {
 
           const plate = plateBBoxRef.current
 
-          // Check if user is in active recording mode
-          if (isTrackingRef.current && (lastYRef.current !== null)) {
+          // RECORDING STEP: Capture Movement and Velocity
+          if (step === 'recording') {
             pathPointsRef.current.push({ x: plate.x, y: plate.y })
             if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
 
-            if (lastTimeRef.current !== null) {
-              const deltaY = lastYRef.current - plate.y // Upward motion = positive
+            if (lastYRef.current !== null && lastTimeRef.current !== null) {
+              const deltaY = lastYRef.current - plate.y // Upward movement = positive
               const deltaTime = (now - lastTimeRef.current) / 1000
               const metersPerPixel = 0.0028
 
@@ -208,6 +207,7 @@ export default function Page() {
                       { rep: prev.length + 1, vel: parseFloat(repVel.toFixed(2)), eccn: 0.6, rom: 55 }
                     ]
 
+                    // AUTO-STOP when target reps reached
                     if (newReps.length >= targetReps) {
                       setTimeout(() => finishRecording(), 100)
                     }
@@ -220,15 +220,15 @@ export default function Page() {
                 }
               }
             }
-          }
 
-          lastYRef.current = plate.y
-          lastTimeRef.current = now
+            lastYRef.current = plate.y
+            lastTimeRef.current = now
+          }
 
           ctx.clearRect(0, 0, width, height)
 
-          // 1. Draw Dotted Trajectory Green Path
-          if (pathPointsRef.current.length > 1) {
+          // 1. Draw Dotted Trajectory Green Path during recording
+          if (step === 'recording' && pathPointsRef.current.length > 1) {
             ctx.strokeStyle = '#00FF66'
             ctx.lineWidth = 5
             ctx.lineCap = 'round'
@@ -243,7 +243,7 @@ export default function Page() {
             ctx.setLineDash([])
           }
 
-          // 2. Draw Target Circle: Green when locked, Red when scanning
+          // 2. Draw Weight Plate Ring: GREEN when detected / RED when missing
           const targetColor = isLocked ? '#00FF66' : '#EF4444'
 
           ctx.strokeStyle = targetColor
@@ -267,14 +267,17 @@ export default function Page() {
     detect()
   }
 
-  // FIX: Explicitly initialize timestamps and set state on record click
+  // Workflow Handlers
+  const handleHitReady = () => {
+    setStep('ready')
+  }
+
   const handleStartRecording = () => {
     setRepData([])
     pathPointsRef.current = []
     currentVelRef.current = 0
     peakVelRef.current = 0
 
-    // Initialize math reference points
     if (plateBBoxRef.current) {
       lastYRef.current = plateBBoxRef.current.y
     }
@@ -305,7 +308,6 @@ export default function Page() {
 
     setCameraActive(false)
     setIsPlateDetected(false)
-    setIsReady(false)
     plateBBoxRef.current = null
   }
 
@@ -413,15 +415,15 @@ export default function Page() {
         </div>
       )}
 
-      {/* STEP 2 & 3: CAMERA ALIGNMENT & RECORDING */}
-      {(step === 'align' || step === 'recording') && (
+      {/* WORKFLOW STEPS: ALIGN -> READY -> RECORDING */}
+      {(step === 'align' || step === 'ready' || step === 'recording') && (
         <div style={{ padding: '0 16px', display: 'grid', gridTemplateColumns: '1fr 120px', gap: '16px', alignItems: 'center' }}>
           
           <div style={{ position: 'relative', width: '100%', aspectRatio: '9/16', backgroundColor: '#18181B', borderRadius: '16px', overflow: 'hidden' }}>
             <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10 }} />
 
-            {/* Error Message Overlay */}
+            {/* Camera Error Message */}
             {cameraError && (
               <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 40, padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center' }}>
                 <p style={{ color: '#EF4444', fontWeight: '700', marginBottom: '16px' }}>{cameraError}</p>
@@ -429,7 +431,7 @@ export default function Page() {
               </div>
             )}
 
-            {/* Dynamic Lock Badge */}
+            {/* Dynamic Lock Badge: Green when detected, Red when did not detect */}
             <div style={{
               position: 'absolute',
               top: '12px',
@@ -443,10 +445,10 @@ export default function Page() {
               borderRadius: '20px',
               zIndex: 20
             }}>
-              {isPlateDetected ? '🟢 WEIGHT PLATE DETECTED' : '🔴 SCANNING WEIGHT PLATE...'}
+              {isPlateDetected ? '🟢 WEIGHT PLATE DETECTED' : '🔴 SEARCHING WEIGHT PLATE...'}
             </div>
 
-            {/* Metric Floating Card */}
+            {/* Metric Floating Velocity Card */}
             <div style={{
               position: 'absolute',
               bottom: '16px',
@@ -474,41 +476,56 @@ export default function Page() {
               </div>
             </div>
 
-            {/* READY & RECORD BUTTON FLOW */}
-            {step === 'align' && !cameraError && (
-              <div style={{ position: 'absolute', bottom: '16px', right: '16px', zIndex: 30, display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {!isReady ? (
-                  <button
-                    onClick={() => setIsReady(true)}
-                    disabled={!isPlateDetected}
-                    style={{
-                      padding: '12px 20px',
-                      borderRadius: '20px',
-                      border: 'none',
-                      backgroundColor: isPlateDetected ? '#00FF66' : '#333',
-                      color: isPlateDetected ? '#000' : '#888',
-                      fontWeight: '800',
-                      cursor: isPlateDetected ? 'pointer' : 'not-allowed'
-                    }}
-                  >
-                    READY ✓
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleStartRecording}
-                    style={{
-                      padding: '12px 20px',
-                      borderRadius: '20px',
-                      border: 'none',
-                      backgroundColor: '#EF4444',
-                      color: '#FFF',
-                      fontWeight: '800',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    ⏺ RECORD SET
-                  </button>
-                )}
+            {/* ACTION BUTTONS FLOW */}
+            
+            {/* Step 2: READY Button appears ONLY when weight plate detection is GREEN */}
+            {step === 'align' && isPlateDetected && (
+              <div style={{ position: 'absolute', bottom: '16px', right: '16px', zIndex: 30 }}>
+                <button
+                  onClick={handleHitReady}
+                  style={{
+                    padding: '12px 24px',
+                    borderRadius: '20px',
+                    border: 'none',
+                    backgroundColor: '#00FF66',
+                    color: '#000',
+                    fontWeight: '800',
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 15px rgba(0, 255, 102, 0.4)'
+                  }}
+                >
+                  READY ✓
+                </button>
+              </div>
+            )}
+
+            {/* Step 3: START RECORDING Button appears after clicking READY */}
+            {step === 'ready' && (
+              <div style={{ position: 'absolute', bottom: '16px', right: '16px', zIndex: 30 }}>
+                <button
+                  onClick={handleStartRecording}
+                  style={{
+                    padding: '12px 24px',
+                    borderRadius: '20px',
+                    border: 'none',
+                    backgroundColor: '#EF4444',
+                    color: '#FFF',
+                    fontWeight: '800',
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 15px rgba(239, 68, 68, 0.4)'
+                  }}
+                >
+                  ⏺ START RECORDING
+                </button>
+              </div>
+            )}
+
+            {/* Active Recording Indicator Badge */}
+            {step === 'recording' && (
+              <div style={{ position: 'absolute', top: '12px', right: '12px', zIndex: 30, backgroundColor: '#EF4444', color: '#FFF', fontSize: '10px', fontWeight: '900', padding: '4px 10px', borderRadius: '12px' }}>
+                REC ●
               </div>
             )}
           </div>
@@ -532,7 +549,7 @@ export default function Page() {
         </div>
       )}
 
-      {/* STEP 4: SUMMARY & ANALYTICS VIEW */}
+      {/* SUMMARY VIEW: DISPLAY REPS STATS WHEN COMPLETED */}
       {step === 'summary' && repData.length > 0 && (
         <div style={{ padding: '20px 16px 0' }}>
           <div style={{ fontSize: '18px', fontWeight: '800', color: '#EF4444', marginBottom: '12px' }}>
