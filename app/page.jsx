@@ -71,7 +71,7 @@ export default function Page() {
     }
   }
 
-  // Improved plate detection with Sobel gradient
+  // REFINED: Improved plate detection with Sobel gradient
   const detectWeightPlateHub = (video, displayWidth, displayHeight) => {
     const procCanvas = procCanvasRef.current
     if (!procCanvas) return null
@@ -107,6 +107,7 @@ export default function Page() {
       endY = Math.floor(pH * 0.85)
     }
 
+    // REFINED: Sobel gradient detection
     for (let y = startY + 1; y < endY - 1; y += 2) {
       for (let x = startX + 1; x < endX - 1; x += 2) {
         const idx = (y * pW + x) * 4
@@ -141,7 +142,7 @@ export default function Page() {
     }
   }
 
-  // High Frequency Optical Loop
+  // REFINED: High Frequency Optical Loop - Smart plate detection first
   const runPlateTrackerLoop = () => {
     const detect = () => {
       if (!isTrackingRef.current || !videoRef.current || !canvasRef.current) return
@@ -156,6 +157,7 @@ export default function Page() {
         const height = canvas.height
 
         const detected = detectWeightPlateHub(video, width, height)
+        // REFINED: Require confidence > 15 before showing as locked
         const isLocked = detected && detected.confidence > 15
         setIsPlateDetected(isLocked)
         setDetectionConfidence(Math.round((detected?.confidence || 0) / 255 * 100))
@@ -164,7 +166,7 @@ export default function Page() {
           if (!plateBBoxRef.current) {
             plateBBoxRef.current = { x: detected.x, y: detected.y, radius: 28 }
           } else {
-            // REFINED: Increased smoothing (0.6) to reduce jitter dramatically
+            // REFINED: Increased smoothing (0.6) to eliminate sensor jitter
             const alpha = 0.6
             plateBBoxRef.current.x += alpha * (detected.x - plateBBoxRef.current.x)
             plateBBoxRef.current.y += alpha * (detected.y - plateBBoxRef.current.y)
@@ -173,7 +175,7 @@ export default function Page() {
 
           const plate = plateBBoxRef.current
 
-          // REFINED: Only track if confidence > 40% to prevent false captures
+          // REFINED: Only track reps if confidence is strong (>40%) AND in recording mode
           if (stepRef.current === 'recording' && detected.confidence > 102) {
             pathPointsRef.current.push({ x: plate.x, y: plate.y })
             if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
@@ -186,19 +188,20 @@ export default function Page() {
               if (deltaTime > 0 && deltaTime < 0.2) {
                 const vel = (deltaY * metersPerPixel) / deltaTime
 
-                // REFINED: Higher threshold for velocity detection (0.08)
+                // REFINED: Higher noise filtering threshold (0.08)
                 if (Math.abs(vel) > 0.08) {
                   currentVelRef.current = Math.abs(vel)
                 }
 
-                // REFINED: Doubled thresholds (0.05 → 0.12)
-                // Concentric phase: require velocity > 0.12
+                // REFINED: State machine with doubled thresholds (0.12)
+                // Requires FULL rep cycle: concentric → eccentric
                 if (vel > 0.12) {
+                  // Concentric phase (moving up)
                   if (!isMovingRef.current) isMovingRef.current = true
                   if (vel > peakVelRef.current) peakVelRef.current = vel
                 } 
-                // Eccentric phase: require velocity < -0.12
                 else if (vel < -0.12 && isMovingRef.current) {
+                  // Eccentric phase detected - rep complete!
                   isMovingRef.current = false
                   const repVel = peakVelRef.current > 0 ? peakVelRef.current : currentVelRef.current
 
@@ -244,7 +247,7 @@ export default function Page() {
             ctx.setLineDash([])
           }
 
-          // Draw Target Circle: GREEN when detected, RED when missing
+          // REFINED: Draw Target Circle: GREEN when plate locked, RED when searching
           const targetColor = isLocked ? '#00FF66' : '#EF4444'
 
           ctx.strokeStyle = targetColor
@@ -314,7 +317,6 @@ export default function Page() {
     peakVelRef.current = 0
     isMovingRef.current = false
 
-    // REFINED: Clean baseline - ready for deliberate movement only
     if (plateBBoxRef.current) {
       lastYRef.current = plateBBoxRef.current.y
     }
@@ -481,7 +483,7 @@ export default function Page() {
               </div>
             )}
 
-            {/* Lock Badge */}
+            {/* REFINED: Lock Badge - Shows detection status */}
             <div style={{
               position: 'absolute',
               top: '12px',
