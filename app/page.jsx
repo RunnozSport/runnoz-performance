@@ -164,7 +164,8 @@ export default function Page() {
           if (!plateBBoxRef.current) {
             plateBBoxRef.current = { x: detected.x, y: detected.y, radius: 28 }
           } else {
-            const alpha = 0.35
+            // REFINED: Increased smoothing (0.6) to reduce jitter dramatically
+            const alpha = 0.6
             plateBBoxRef.current.x += alpha * (detected.x - plateBBoxRef.current.x)
             plateBBoxRef.current.y += alpha * (detected.y - plateBBoxRef.current.y)
             plateBBoxRef.current.radius = 28
@@ -172,8 +173,8 @@ export default function Page() {
 
           const plate = plateBBoxRef.current
 
-          // ACTIVE RECORDING MODE TRACKING
-          if (stepRef.current === 'recording') {
+          // REFINED: Only track if confidence > 40% to prevent false captures
+          if (stepRef.current === 'recording' && detected.confidence > 102) {
             pathPointsRef.current.push({ x: plate.x, y: plate.y })
             if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
 
@@ -185,14 +186,19 @@ export default function Page() {
               if (deltaTime > 0 && deltaTime < 0.2) {
                 const vel = (deltaY * metersPerPixel) / deltaTime
 
-                if (Math.abs(vel) > 0.02) {
+                // REFINED: Higher threshold for velocity detection (0.08)
+                if (Math.abs(vel) > 0.08) {
                   currentVelRef.current = Math.abs(vel)
                 }
 
-                if (vel > 0.05) {
+                // REFINED: Doubled thresholds (0.05 → 0.12)
+                // Concentric phase: require velocity > 0.12
+                if (vel > 0.12) {
                   if (!isMovingRef.current) isMovingRef.current = true
                   if (vel > peakVelRef.current) peakVelRef.current = vel
-                } else if (vel < -0.05 && isMovingRef.current) {
+                } 
+                // Eccentric phase: require velocity < -0.12
+                else if (vel < -0.12 && isMovingRef.current) {
                   isMovingRef.current = false
                   const repVel = peakVelRef.current > 0 ? peakVelRef.current : currentVelRef.current
 
@@ -308,6 +314,7 @@ export default function Page() {
     peakVelRef.current = 0
     isMovingRef.current = false
 
+    // REFINED: Clean baseline - ready for deliberate movement only
     if (plateBBoxRef.current) {
       lastYRef.current = plateBBoxRef.current.y
     }
