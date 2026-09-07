@@ -2,29 +2,23 @@
 import { useState, useRef, useEffect } from 'react'
 
 export default function Page() {
-  // Simple states: detect plate → record velocity
   const [step, setStep] = useState('setup')
   const [exercise, setExercise] = useState('Back Squat')
   const [loadKg, setLoadKg] = useState(100)
   const [targetReps, setTargetReps] = useState(3)
-  
-  // Detection & Recording
   const [isPlateDetected, setIsPlateDetected] = useState(false)
-  const [plateColor, setPlateColor] = useState('red') // 'red' | 'green'
+  const [plateColor, setPlateColor] = useState('red')
   const [currentVelocity, setCurrentVelocity] = useState(0)
   const [repCount, setRepCount] = useState(0)
   const [repData, setRepData] = useState([])
   const [cameraError, setCameraError] = useState('')
 
-  // Refs for tracking
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const procCanvasRef = useRef(null)
   const rafRef = useRef(null)
   const isTrackingRef = useRef(false)
   const stepRef = useRef('setup')
-
-  // Barbell position tracking
   const platePosRef = useRef(null)
   const lastYRef = useRef(null)
   const lastTimeRef = useRef(null)
@@ -49,7 +43,6 @@ export default function Page() {
     }
   }, [])
 
-  // Simple plate detection - find bright edges (weight plate)
   const detectPlate = (video, width, height) => {
     const procCanvas = procCanvasRef.current
     const pCtx = procCanvas.getContext('2d', { willReadFrequently: true })
@@ -64,13 +57,11 @@ export default function Page() {
     let centerX = pW / 2
     let centerY = pH / 2
 
-    // Find strongest edge (weight plate hub)
     for (let y = 10; y < pH - 10; y += 2) {
       for (let x = 10; x < pW - 10; x += 2) {
         const idx = (y * pW + x) * 4
         const r = data[idx], g = data[idx + 1], b = data[idx + 2]
         const lum = r * 0.299 + g * 0.587 + b * 0.114
-
         const rightLum = data[idx + 8] * 0.299 + data[idx + 9] * 0.587 + data[idx + 10] * 0.114
         const edge = Math.abs(lum - rightLum)
 
@@ -85,14 +76,9 @@ export default function Page() {
     const scaleX = width / pW
     const scaleY = height / pH
 
-    return {
-      x: centerX * scaleX,
-      y: centerY * scaleY,
-      strength: maxEdge
-    }
+    return { x: centerX * scaleX, y: centerY * scaleY, strength: maxEdge }
   }
 
-  // Main tracking loop
   const runTracker = () => {
     const track = () => {
       if (!isTrackingRef.current || !videoRef.current || !canvasRef.current) return
@@ -104,14 +90,11 @@ export default function Page() {
 
       if (video.readyState >= 2) {
         const detected = detectPlate(video, canvas.width, canvas.height)
-        
-        // RED if no plate, GREEN if detected
         const isLocked = detected.strength > 20
         setPlateColor(isLocked ? 'green' : 'red')
         setIsPlateDetected(isLocked)
 
         if (isLocked) {
-          // Smooth position
           if (!platePosRef.current) {
             platePosRef.current = { x: detected.x, y: detected.y }
           } else {
@@ -122,19 +105,15 @@ export default function Page() {
 
           const plate = platePosRef.current
 
-          // RECORDING MODE - Track barbell displacement
           if (stepRef.current === 'recording') {
             if (lastYRef.current !== null && lastTimeRef.current !== null) {
-              const deltaY = lastYRef.current - plate.y // Up = positive
+              const deltaY = lastYRef.current - plate.y
               const deltaTime = (now - lastTimeRef.current) / 1000
 
               if (deltaTime > 0 && deltaTime < 0.3) {
-                // Simple velocity = displacement / time
-                const vel = (deltaY / 35) / deltaTime // 35 pixels ≈ 10cm calibration
-
+                const vel = (deltaY / 35) / deltaTime
                 setCurrentVelocity(Math.abs(vel))
 
-                // Track peak velocity during rep
                 if (vel > 0.05) {
                   if (!repStartRef.current) repStartRef.current = plate.y
                   if (Math.abs(vel) > peakVelRef.current) {
@@ -142,26 +121,20 @@ export default function Page() {
                   }
                 }
 
-                // Rep complete when bar returns down (10cm+ movement)
                 if (vel < -0.05 && repStartRef.current) {
                   const displacement = Math.abs(repStartRef.current - plate.y)
-                  
-                  // Only count if moved 10cm+ (35 pixels)
                   if (displacement > 35) {
                     const newRep = {
                       rep: repData.length + 1,
                       vel: parseFloat(peakVelRef.current.toFixed(2))
                     }
-                    
+
                     setRepData(prev => {
                       const updated = [...prev, newRep]
                       setRepCount(updated.length)
-                      
-                      // Auto-finish when target reps reached
                       if (updated.length >= targetReps) {
                         setTimeout(() => finishRecording(), 100)
                       }
-                      
                       return updated
                     })
 
@@ -176,7 +149,6 @@ export default function Page() {
             lastTimeRef.current = now
           }
 
-          // Draw detection circle
           ctx.clearRect(0, 0, canvas.width, canvas.height)
           ctx.strokeStyle = plateColor === 'green' ? '#00FF66' : '#EF4444'
           ctx.lineWidth = 5
@@ -222,7 +194,7 @@ export default function Page() {
         }
       }
     } catch (err) {
-      setCameraError('Camera access denied: ' + err.message)
+      setCameraError('Camera access denied')
     }
   }
 
@@ -235,9 +207,7 @@ export default function Page() {
     }
   }
 
-  const handleReady = () => {
-    setStep('ready')
-  }
+  const handleReady = () => setStep('ready')
 
   const handleStartRecording = () => {
     setRepData([])
@@ -264,7 +234,6 @@ export default function Page() {
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0D0D0E', color: '#FFF', fontFamily: 'system-ui', paddingBottom: '80px' }}>
-      {/* Header */}
       <div style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1C1C1F' }}>
         <div>
           <h1 style={{ fontSize: '18px', fontWeight: '700', margin: 0 }}>{exercise}</h1>
@@ -273,7 +242,6 @@ export default function Page() {
         <span onClick={resetAll} style={{ fontSize: '20px', cursor: 'pointer' }}>←</span>
       </div>
 
-      {/* SETUP */}
       {step === 'setup' && (
         <div style={{ padding: '24px', maxWidth: '500px', margin: '0 auto' }}>
           <h2 style={{ fontSize: '20px', fontWeight: '800', marginBottom: '20px' }}>Setup</h2>
@@ -288,3 +256,82 @@ export default function Page() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
             <div>
               <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>LOAD (KG)</label>
+              <input type="number" value={loadKg} onChange={(e) => setLoadKg(Number(e.target.value))} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>REPS</label>
+              <input type="number" value={targetReps} onChange={(e) => setTargetReps(Number(e.target.value))} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }} />
+            </div>
+          </div>
+          <button onClick={startCamera} style={{ width: '100%', padding: '14px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontSize: '16px', fontWeight: '800', cursor: 'pointer' }}>Start Camera →</button>
+        </div>
+      )}
+
+      {(step === 'align' || step === 'ready' || step === 'recording') && (
+        <div style={{ padding: '16px' }}>
+          <div style={{ position: 'relative', width: '100%', aspectRatio: '9/16', backgroundColor: '#18181B', borderRadius: '12px', overflow: 'hidden' }}>
+            <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10 }} />
+
+            <div style={{ position: 'absolute', top: '12px', left: '12px', backgroundColor: plateColor === 'green' ? 'rgba(0, 255, 102, 0.2)' : 'rgba(239, 68, 68, 0.2)', border: `2px solid ${plateColor === 'green' ? '#00FF66' : '#EF4444'}`, color: plateColor === 'green' ? '#00FF66' : '#EF4444', fontSize: '13px', fontWeight: '800', padding: '8px 14px', borderRadius: '20px', zIndex: 20 }}>
+              {plateColor === 'green' ? '🟢 PLATE LOCKED' : '🔴 NO PLATE'}
+            </div>
+
+            <div style={{ position: 'absolute', bottom: '16px', left: '16px', backgroundColor: 'rgba(18, 18, 20, 0.9)', borderRadius: '12px', padding: '12px 16px', border: '1px solid #27272A', zIndex: 20 }}>
+              <div style={{ fontSize: '32px', fontWeight: '900', color: '#00FF66' }}>{currentVelocity.toFixed(2)}</div>
+              <div style={{ fontSize: '11px', color: '#A1A1AA', marginTop: '4px' }}>m/s</div>
+              <div style={{ fontSize: '13px', color: '#E4E4E7', marginTop: '6px', fontWeight: '600' }}>{repCount}/{targetReps}</div>
+            </div>
+
+            {step === 'align' && plateColor === 'green' && (
+              <button onClick={handleReady} style={{ position: 'absolute', bottom: '16px', right: '16px', padding: '12px 24px', borderRadius: '8px', border: 'none', backgroundColor: '#00FF66', color: '#000', fontWeight: '800', fontSize: '14px', cursor: 'pointer', zIndex: 30 }}>READY ✓</button>
+            )}
+
+            {step === 'ready' && (
+              <button onClick={handleStartRecording} style={{ position: 'absolute', bottom: '16px', right: '16px', padding: '12px 24px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontWeight: '800', fontSize: '14px', cursor: 'pointer', zIndex: 30 }}>⏺ RECORD</button>
+            )}
+
+            {step === 'recording' && (
+              <div style={{ position: 'absolute', top: '12px', right: '12px', backgroundColor: '#EF4444', color: '#FFF', fontSize: '12px', fontWeight: '900', padding: '6px 12px', borderRadius: '8px', zIndex: 30 }}>🔴 REC</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {step === 'summary' && repData.length > 0 && (
+        <div style={{ padding: '20px 16px' }}>
+          <div style={{ fontSize: '18px', fontWeight: '800', color: '#EF4444', marginBottom: '16px' }}>✓ Set Complete</div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+            <div>
+              <div style={{ fontSize: '12px', color: '#A1A1AA', marginBottom: '4px' }}>Best</div>
+              <div style={{ fontSize: '24px', fontWeight: '800', color: '#FFF' }}>{Math.max(...repData.map(r => r.vel)).toFixed(2)} m/s</div>
+            </div>
+            <div>
+              <div style={{ fontSize: '12px', color: '#A1A1AA', marginBottom: '4px' }}>Average</div>
+              <div style={{ fontSize: '24px', fontWeight: '800', color: '#FFF' }}>{(repData.reduce((a, b) => a + b.vel, 0) / repData.length).toFixed(2)} m/s</div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', height: '120px', alignItems: 'flex-end', paddingBottom: '12px', marginBottom: '20px', borderBottom: '1px solid #27272A' }}>
+            {repData.map((r, i) => (
+              <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <div style={{ width: '100%', height: `${(r.vel / 1.2) * 100}%`, backgroundColor: '#EF4444', borderRadius: '4px 4px 0 0' }} />
+                <div style={{ fontSize: '11px', color: '#A1A1AA', marginTop: '8px' }}>{r.rep}</div>
+              </div>
+            ))}
+          </div>
+
+          {repData.map((r) => (
+            <div key={r.rep} style={{ display: 'grid', gridTemplateColumns: '40px 1fr', padding: '12px 0', borderTop: '1px solid #1C1C1F' }}>
+              <div style={{ color: '#A1A1AA', fontSize: '12px' }}>Rep {r.rep}</div>
+              <div style={{ fontSize: '14px', fontWeight: '700', color: '#FFF' }}>{r.vel} m/s</div>
+            </div>
+          ))}
+
+          <button onClick={resetAll} style={{ width: '100%', marginTop: '20px', padding: '14px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontSize: '15px', fontWeight: '800', cursor: 'pointer' }}>Next Set →</button>
+        </div>
+      )}
+    </div>
+  )
+}
