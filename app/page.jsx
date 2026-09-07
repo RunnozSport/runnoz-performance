@@ -21,9 +21,10 @@ export default function Page() {
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const modelRef = useRef(null)
+  const procCanvasRef = useRef(null)
   const rafRef = useRef(null)
   const isTrackingRef = useRef(false)
+  const stepRef = useRef('setup') // Ref mirror to avoid stale closure issues in loop
 
   // Motion Math Variables
   const plateBBoxRef = useRef(null)
@@ -34,6 +35,11 @@ export default function Page() {
 
   const currentVelRef = useRef(0.00)
   const peakVelRef = useRef(0.00)
+
+  // Keep stepRef in sync with state
+  useEffect(() => {
+    stepRef.current = step
+  }, [step])
 
   // Speech Output
   const speakVelocity = (vel) => {
@@ -46,20 +52,10 @@ export default function Page() {
     }
   }
 
-  // Load COCO-SSD Neural Network Model
   useEffect(() => {
-    const loadAIModel = async () => {
-      try {
-        const tf = await import('@tensorflow/tfjs')
-        const cocoSsd = await import('@tensorflow-models/coco-ssd')
-        await tf.ready()
-        const loadedModel = await cocoSsd.load()
-        modelRef.current = loadedModel
-      } catch (err) {
-        console.error('Failed to load AI Model:', err)
-      }
-    }
-    loadAIModel()
+    procCanvasRef.current = document.createElement('canvas')
+    procCanvasRef.current.width = 320
+    procCanvasRef.current.height = 180
 
     return () => {
       isTrackingRef.current = false
@@ -93,7 +89,7 @@ export default function Page() {
           }
           setCameraActive(true)
           isTrackingRef.current = true
-          runObjectDetectionLoop()
+          runPlateTrackerLoop()
         }
       }
     } catch (err) {
@@ -102,9 +98,63 @@ export default function Page() {
     }
   }
 
-  // 60 FPS Detection Engine
-  const runObjectDetectionLoop = () => {
-    const detect = async () => {
+  // Precise Olympic Plate Edge & Hub Search Algorithm
+  const detectWeightPlateHub = (video, displayWidth, displayHeight) => {
+    const procCanvas = procCanvasRef.current
+    if (!procCanvas) return null
+
+    const pCtx = procCanvas.getContext('2d', { willReadFrequently: true })
+    const pW = procCanvas.width
+    const pH = procCanvas.height
+
+    pCtx.drawImage(video, 0, 0, pW, pH)
+    const imgData = pCtx.getImageData(0, 0, pW, pH)
+    const data = imgData.data
+
+    let maxGradient = 0
+    let bestX = pW / 2
+    let bestY = pH / 2
+
+    const lastPos = plateBBoxRef.current
+    const searchScaleX = pW / displayWidth
+    const searchScaleY = pH / displayHeight
+
+    const startX = lastPos ? Math.max(10, Math.floor(lastPos.x * searchScaleX) - 25) : Math.floor(pW * 0.15)
+    const endX = lastPos ? Math.min(pW - 10, Math.floor(lastPos.x * searchScaleX) + 25) : Math.floor(pW * 0.85)
+    const startY = lastPos ? Math.max(10, Math.floor(lastPos.y * searchScaleY) - 25) : Math.floor(pH * 0.15)
+    const endY = lastPos ? Math.min(pH - 10, Math.floor(lastPos.y * searchScaleY) + 25) : Math.floor(pH * 0.85)
+
+    for (let y = startY; y < endY; y += 2) {
+      for (let x = startX; x < endX; x += 2) {
+        const idx = (y * pW + x) * 4
+
+        const lum = data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114
+        const rightLum = data[idx + 8] * 0.299 + data[idx + 9] * 0.587 + data[idx + 10] * 0.114
+        const bottomLum = data[((y + 2) * pW + x) * 4] * 0.299
+
+        const grad = Math.abs(lum - rightLum) + Math.abs(lum - bottomLum)
+
+        if (grad > maxGradient) {
+          maxGradient = grad
+          bestX = x
+          bestY = y
+        }
+      }
+    }
+
+    const scaleX = displayWidth / pW
+    const scaleY = displayHeight / pH
+
+    return {
+      x: bestX * scaleX,
+      y: bestY * scaleY,
+      confidence: maxGradient
+    }
+  }
+
+  // High Frequency Optical Loop
+  const runPlateTrackerLoop = () => {
+    const detect = () => {
       if (!isTrackingRef.current || !videoRef.current || !canvasRef.current) return
 
       const video = videoRef.current
@@ -116,76 +166,32 @@ export default function Page() {
         const width = canvas.width
         const height = canvas.height
 
-        let detectedPlate = null
-
-        if (modelRef.current) {
-          try {
-            const predictions = await modelRef.current.detect(video)
-            const platePrediction = predictions.find(
-              (p) => ['sports ball', 'disc', 'bowl', 'clock', 'apple', 'orange'].includes(p.class) || p.score > 0.4
-            )
-
-            if (platePrediction) {
-              const [bx, by, bw, bh] = platePrediction.bbox
-              detectedPlate = {
-                x: bx + bw / 2,
-                y: by + bh / 2,
-                radius: Math.max(bw, bh) / 2
-              }
-            }
-          } catch (e) {
-            // Fallback
-          }
-        }
-
-        // Fallback Circular Gradient Detector if AI model is loading
-        if (!detectedPlate) {
-          const imgData = ctx.getImageData(width * 0.2, height * 0.2, width * 0.6, height * 0.6)
-          let maxG = 0
-          let bestX = width / 2
-          let bestY = height / 2
-
-          for (let y = 10; y < height * 0.6 - 10; y += 12) {
-            for (let x = 10; x < width * 0.6 - 10; x += 12) {
-              const idx = (Math.floor(y) * Math.floor(width * 0.6) + Math.floor(x)) * 4
-              const diff = Math.abs(imgData.data[idx] - imgData.data[idx + 16])
-              if (diff > maxG) {
-                maxG = diff
-                bestX = width * 0.2 + x
-                bestY = height * 0.2 + y
-              }
-            }
-          }
-
-          if (maxG > 20) {
-            detectedPlate = { x: bestX, y: bestY, radius: 28 }
-          }
-        }
-
-        const isLocked = !!detectedPlate
+        const detected = detectWeightPlateHub(video, width, height)
+        const isLocked = detected && detected.confidence > 22
         setIsPlateDetected(isLocked)
 
-        if (detectedPlate) {
+        if (detected && isLocked) {
           if (!plateBBoxRef.current) {
-            plateBBoxRef.current = detectedPlate
+            plateBBoxRef.current = { x: detected.x, y: detected.y, radius: 28 }
           } else {
+            // Temporal smoothing filter to eliminate jitter
             const alpha = 0.35
-            plateBBoxRef.current.x += alpha * (detectedPlate.x - plateBBoxRef.current.x)
-            plateBBoxRef.current.y += alpha * (detectedPlate.y - plateBBoxRef.current.y)
-            plateBBoxRef.current.radius = detectedPlate.radius || 28
+            plateBBoxRef.current.x += alpha * (detected.x - plateBBoxRef.current.x)
+            plateBBoxRef.current.y += alpha * (detected.y - plateBBoxRef.current.y)
+            plateBBoxRef.current.radius = 28
           }
 
           const plate = plateBBoxRef.current
 
-          // RECORDING STEP: Capture Movement and Velocity
-          if (step === 'recording') {
+          // ACTIVE RECORDING MODE TRACKING
+          if (stepRef.current === 'recording') {
             pathPointsRef.current.push({ x: plate.x, y: plate.y })
             if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
 
             if (lastYRef.current !== null && lastTimeRef.current !== null) {
               const deltaY = lastYRef.current - plate.y // Upward movement = positive
               const deltaTime = (now - lastTimeRef.current) / 1000
-              const metersPerPixel = 0.0028
+              const metersPerPixel = 0.0028 // Olympic Plate Calibration
 
               if (deltaTime > 0 && deltaTime < 0.2) {
                 const vel = (deltaY * metersPerPixel) / deltaTime
@@ -207,7 +213,6 @@ export default function Page() {
                       { rep: prev.length + 1, vel: parseFloat(repVel.toFixed(2)), eccn: 0.6, rom: 55 }
                     ]
 
-                    // AUTO-STOP when target reps reached
                     if (newReps.length >= targetReps) {
                       setTimeout(() => finishRecording(), 100)
                     }
@@ -227,8 +232,8 @@ export default function Page() {
 
           ctx.clearRect(0, 0, width, height)
 
-          // 1. Draw Dotted Trajectory Green Path during recording
-          if (step === 'recording' && pathPointsRef.current.length > 1) {
+          // 1. Draw Green Trajectory Path during recording
+          if (stepRef.current === 'recording' && pathPointsRef.current.length > 1) {
             ctx.strokeStyle = '#00FF66'
             ctx.lineWidth = 5
             ctx.lineCap = 'round'
@@ -243,7 +248,7 @@ export default function Page() {
             ctx.setLineDash([])
           }
 
-          // 2. Draw Weight Plate Ring: GREEN when detected / RED when missing
+          // 2. Draw Target Circle: GREEN when detected, RED when missing
           const targetColor = isLocked ? '#00FF66' : '#EF4444'
 
           ctx.strokeStyle = targetColor
@@ -267,11 +272,12 @@ export default function Page() {
     detect()
   }
 
-  // Workflow Handlers
+  // Workflow Step Triggers
   const handleHitReady = () => {
     setStep('ready')
   }
 
+  // START RECORDING FIX: Reset math references explicitly on click
   const handleStartRecording = () => {
     setRepData([])
     pathPointsRef.current = []
@@ -315,6 +321,19 @@ export default function Page() {
     stopCamera()
     setRepData([])
     setStep('setup')
+  }
+
+  const handleManualTapToLock = (e) => {
+    if (!canvasRef.current) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    const scaleX = canvasRef.current.width / rect.width
+    const scaleY = canvasRef.current.height / rect.height
+
+    const x = (e.clientX - rect.left) * scaleX
+    const y = (e.clientY - rect.top) * scaleY
+
+    plateBBoxRef.current = { x, y, radius: 28 }
+    setIsPlateDetected(true)
   }
 
   const vels = repData.map((r) => r.vel)
@@ -421,9 +440,9 @@ export default function Page() {
           
           <div style={{ position: 'relative', width: '100%', aspectRatio: '9/16', backgroundColor: '#18181B', borderRadius: '16px', overflow: 'hidden' }}>
             <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10 }} />
+            <canvas ref={canvasRef} onClick={handleManualTapToLock} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10, cursor: 'crosshair' }} />
 
-            {/* Camera Error Message */}
+            {/* Error Message */}
             {cameraError && (
               <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 40, padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center' }}>
                 <p style={{ color: '#EF4444', fontWeight: '700', marginBottom: '16px' }}>{cameraError}</p>
@@ -431,7 +450,7 @@ export default function Page() {
               </div>
             )}
 
-            {/* Dynamic Lock Badge: Green when detected, Red when did not detect */}
+            {/* Lock Badge */}
             <div style={{
               position: 'absolute',
               top: '12px',
@@ -448,7 +467,7 @@ export default function Page() {
               {isPlateDetected ? '🟢 WEIGHT PLATE DETECTED' : '🔴 SEARCHING WEIGHT PLATE...'}
             </div>
 
-            {/* Metric Floating Velocity Card */}
+            {/* Metric Floating Card */}
             <div style={{
               position: 'absolute',
               bottom: '16px',
@@ -477,8 +496,6 @@ export default function Page() {
             </div>
 
             {/* ACTION BUTTONS FLOW */}
-            
-            {/* Step 2: READY Button appears ONLY when weight plate detection is GREEN */}
             {step === 'align' && isPlateDetected && (
               <div style={{ position: 'absolute', bottom: '16px', right: '16px', zIndex: 30 }}>
                 <button
@@ -500,7 +517,6 @@ export default function Page() {
               </div>
             )}
 
-            {/* Step 3: START RECORDING Button appears after clicking READY */}
             {step === 'ready' && (
               <div style={{ position: 'absolute', bottom: '16px', right: '16px', zIndex: 30 }}>
                 <button
@@ -522,7 +538,6 @@ export default function Page() {
               </div>
             )}
 
-            {/* Active Recording Indicator Badge */}
             {step === 'recording' && (
               <div style={{ position: 'absolute', top: '12px', right: '12px', zIndex: 30, backgroundColor: '#EF4444', color: '#FFF', fontSize: '10px', fontWeight: '900', padding: '4px 10px', borderRadius: '12px' }}>
                 REC ●
