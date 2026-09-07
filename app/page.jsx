@@ -7,7 +7,7 @@ export default function Page() {
   
   // Workout Configuration
   const [exercise, setExercise] = useState('Back Squat - High Bar')
-  const [loadKg, setLoadKg] = useState(10)
+  const [loadKg, setLoadKg] = useState(100)
   const [targetReps, setTargetReps] = useState(3)
   const [audioFeedback, setAudioFeedback] = useState(true)
 
@@ -15,6 +15,7 @@ export default function Page() {
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraError, setCameraError] = useState('')
   const [isPlateDetected, setIsPlateDetected] = useState(false)
+  const [detectionConfidence, setDetectionConfidence] = useState(0)
 
   // Recorded Sets Data
   const [repData, setRepData] = useState([])
@@ -24,14 +25,14 @@ export default function Page() {
   const procCanvasRef = useRef(null)
   const rafRef = useRef(null)
   const isTrackingRef = useRef(false)
-  const stepRef = useRef('setup') // Ref mirror to avoid stale closure issues in loop
+  const stepRef = useRef('setup')
 
   // Motion Math Variables
   const plateBBoxRef = useRef(null)
   const lastYRef = useRef(null)
   const lastTimeRef = useRef(null)
   const pathPointsRef = useRef([])
-  const isConcentricRef = useRef(false)
+  const isMovingRef = useRef(false)
 
   const currentVelRef = useRef(0.00)
   const peakVelRef = useRef(0.00)
@@ -41,17 +42,6 @@ export default function Page() {
     stepRef.current = step
   }, [step])
 
-  // Speech Output
-  const speakVelocity = (vel) => {
-    if (!audioFeedback || typeof window === 'undefined') return
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel()
-      const msg = new SpeechSynthesisUtterance(`${vel.toFixed(2)}`)
-      msg.rate = 1.2
-      window.speechSynthesis.speak(msg)
-    }
-  }
-
   useEffect(() => {
     procCanvasRef.current = document.createElement('canvas')
     procCanvasRef.current.width = 320
@@ -60,45 +50,28 @@ export default function Page() {
     return () => {
       isTrackingRef.current = false
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      if (videoRef.current?.srcObject) {
+        videoRef.current.srcObject.getTracks().forEach(t => t.stop())
+      }
     }
   }, [])
 
-  // Start Camera
-  const startCamera = async () => {
-    setCameraError('')
-    setStep('align')
-
+  // Speech Output
+  const speakVelocity = (vel) => {
+    if (!audioFeedback || typeof window === 'undefined') return
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          width: { ideal: 1280 }, 
-          height: { ideal: 720 }, 
-          facingMode: { ideal: 'environment' }, 
-          frameRate: { ideal: 60 } 
-        },
-        audio: false
-      })
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current.play()
-          if (canvasRef.current && videoRef.current) {
-            canvasRef.current.width = videoRef.current.videoWidth || 1280
-            canvasRef.current.height = videoRef.current.videoHeight || 720
-          }
-          setCameraActive(true)
-          isTrackingRef.current = true
-          runPlateTrackerLoop()
-        }
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel()
+        const msg = new SpeechSynthesisUtterance(`${vel.toFixed(2)}`)
+        msg.rate = 1.2
+        window.speechSynthesis.speak(msg)
       }
-    } catch (err) {
-      console.error('Camera error:', err)
-      setCameraError('Camera error: ' + err.message)
+    } catch (e) {
+      console.warn('Speech failed:', e)
     }
   }
 
-  // Precise Olympic Plate Edge & Hub Search Algorithm
+  // Improved plate detection with Sobel gradient
   const detectWeightPlateHub = (video, displayWidth, displayHeight) => {
     const procCanvas = procCanvasRef.current
     if (!procCanvas) return null
@@ -119,23 +92,39 @@ export default function Page() {
     const searchScaleX = pW / displayWidth
     const searchScaleY = pH / displayHeight
 
-    const startX = lastPos ? Math.max(10, Math.floor(lastPos.x * searchScaleX) - 25) : Math.floor(pW * 0.15)
-    const endX = lastPos ? Math.min(pW - 10, Math.floor(lastPos.x * searchScaleX) + 25) : Math.floor(pW * 0.85)
-    const startY = lastPos ? Math.max(10, Math.floor(lastPos.y * searchScaleY) - 25) : Math.floor(pH * 0.15)
-    const endY = lastPos ? Math.min(pH - 10, Math.floor(lastPos.y * searchScaleY) + 25) : Math.floor(pH * 0.85)
+    let startX, endX, startY, endY
 
-    for (let y = startY; y < endY; y += 2) {
-      for (let x = startX; x < endX; x += 2) {
+    if (lastPos) {
+      const margin = 40
+      startX = Math.max(5, Math.floor(lastPos.x * searchScaleX) - margin)
+      endX = Math.min(pW - 5, Math.floor(lastPos.x * searchScaleX) + margin)
+      startY = Math.max(5, Math.floor(lastPos.y * searchScaleY) - margin)
+      endY = Math.min(pH - 5, Math.floor(lastPos.y * searchScaleY) + margin)
+    } else {
+      startX = Math.floor(pW * 0.15)
+      endX = Math.floor(pW * 0.85)
+      startY = Math.floor(pH * 0.15)
+      endY = Math.floor(pH * 0.85)
+    }
+
+    for (let y = startY + 1; y < endY - 1; y += 2) {
+      for (let x = startX + 1; x < endX - 1; x += 2) {
         const idx = (y * pW + x) * 4
 
-        const lum = data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114
-        const rightLum = data[idx + 8] * 0.299 + data[idx + 9] * 0.587 + data[idx + 10] * 0.114
-        const bottomLum = data[((y + 2) * pW + x) * 4] * 0.299
+        // Sobel X gradient
+        const left = data[idx - 4] * 0.299 + data[idx - 3] * 0.587 + data[idx - 2] * 0.114
+        const right = data[idx + 4] * 0.299 + data[idx + 5] * 0.587 + data[idx + 6] * 0.114
+        const gx = Math.abs(right - left)
 
-        const grad = Math.abs(lum - rightLum) + Math.abs(lum - bottomLum)
+        // Sobel Y gradient
+        const top = data[(y - 1) * pW * 4 + x * 4] * 0.299
+        const bottom = data[(y + 1) * pW * 4 + x * 4] * 0.299
+        const gy = Math.abs(bottom - top)
 
-        if (grad > maxGradient) {
-          maxGradient = grad
+        const gradient = gx + gy
+
+        if (gradient > maxGradient) {
+          maxGradient = gradient
           bestX = x
           bestY = y
         }
@@ -148,7 +137,7 @@ export default function Page() {
     return {
       x: bestX * scaleX,
       y: bestY * scaleY,
-      confidence: maxGradient
+      confidence: Math.min(maxGradient, 255)
     }
   }
 
@@ -167,14 +156,14 @@ export default function Page() {
         const height = canvas.height
 
         const detected = detectWeightPlateHub(video, width, height)
-        const isLocked = detected && detected.confidence > 22
+        const isLocked = detected && detected.confidence > 15
         setIsPlateDetected(isLocked)
+        setDetectionConfidence(Math.round((detected?.confidence || 0) / 255 * 100))
 
         if (detected && isLocked) {
           if (!plateBBoxRef.current) {
             plateBBoxRef.current = { x: detected.x, y: detected.y, radius: 28 }
           } else {
-            // Temporal smoothing filter to eliminate jitter
             const alpha = 0.35
             plateBBoxRef.current.x += alpha * (detected.x - plateBBoxRef.current.x)
             plateBBoxRef.current.y += alpha * (detected.y - plateBBoxRef.current.y)
@@ -189,9 +178,9 @@ export default function Page() {
             if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
 
             if (lastYRef.current !== null && lastTimeRef.current !== null) {
-              const deltaY = lastYRef.current - plate.y // Upward movement = positive
+              const deltaY = lastYRef.current - plate.y
               const deltaTime = (now - lastTimeRef.current) / 1000
-              const metersPerPixel = 0.0028 // Olympic Plate Calibration
+              const metersPerPixel = 0.0028
 
               if (deltaTime > 0 && deltaTime < 0.2) {
                 const vel = (deltaY * metersPerPixel) / deltaTime
@@ -201,10 +190,10 @@ export default function Page() {
                 }
 
                 if (vel > 0.05) {
-                  if (!isConcentricRef.current) isConcentricRef.current = true
+                  if (!isMovingRef.current) isMovingRef.current = true
                   if (vel > peakVelRef.current) peakVelRef.current = vel
-                } else if (vel < -0.05 && isConcentricRef.current) {
-                  isConcentricRef.current = false
+                } else if (vel < -0.05 && isMovingRef.current) {
+                  isMovingRef.current = false
                   const repVel = peakVelRef.current > 0 ? peakVelRef.current : currentVelRef.current
 
                   setRepData((prev) => {
@@ -213,6 +202,8 @@ export default function Page() {
                       { rep: prev.length + 1, vel: parseFloat(repVel.toFixed(2)), eccn: 0.6, rom: 55 }
                     ]
 
+                    speakVelocity(repVel)
+
                     if (newReps.length >= targetReps) {
                       setTimeout(() => finishRecording(), 100)
                     }
@@ -220,7 +211,6 @@ export default function Page() {
                     return newReps
                   })
 
-                  speakVelocity(repVel)
                   peakVelRef.current = 0
                 }
               }
@@ -232,7 +222,7 @@ export default function Page() {
 
           ctx.clearRect(0, 0, width, height)
 
-          // 1. Draw Green Trajectory Path during recording
+          // Draw Green Trajectory Path during recording
           if (stepRef.current === 'recording' && pathPointsRef.current.length > 1) {
             ctx.strokeStyle = '#00FF66'
             ctx.lineWidth = 5
@@ -248,7 +238,7 @@ export default function Page() {
             ctx.setLineDash([])
           }
 
-          // 2. Draw Target Circle: GREEN when detected, RED when missing
+          // Draw Target Circle: GREEN when detected, RED when missing
           const targetColor = isLocked ? '#00FF66' : '#EF4444'
 
           ctx.strokeStyle = targetColor
@@ -272,23 +262,57 @@ export default function Page() {
     detect()
   }
 
+  // START CAMERA
+  const startCamera = async () => {
+    setCameraError('')
+    setStep('align')
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: { ideal: 'environment' },
+          frameRate: { ideal: 60 }
+        },
+        audio: false
+      })
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current.play()
+          if (canvasRef.current && videoRef.current) {
+            canvasRef.current.width = videoRef.current.videoWidth || 1280
+            canvasRef.current.height = videoRef.current.videoHeight || 720
+          }
+          setCameraActive(true)
+          isTrackingRef.current = true
+          runPlateTrackerLoop()
+        }
+      }
+    } catch (err) {
+      setCameraError('Camera error: ' + err.message)
+    }
+  }
+
   // Workflow Step Triggers
   const handleHitReady = () => {
     setStep('ready')
   }
 
-  // START RECORDING FIX: Reset math references explicitly on click
   const handleStartRecording = () => {
     setRepData([])
     pathPointsRef.current = []
     currentVelRef.current = 0
     peakVelRef.current = 0
+    isMovingRef.current = false
 
     if (plateBBoxRef.current) {
       lastYRef.current = plateBBoxRef.current.y
     }
     lastTimeRef.current = performance.now()
-    
+
     setStep('recording')
   }
 
@@ -465,6 +489,7 @@ export default function Page() {
               zIndex: 20
             }}>
               {isPlateDetected ? '🟢 WEIGHT PLATE DETECTED' : '🔴 SEARCHING WEIGHT PLATE...'}
+              {isPlateDetected && <span style={{ marginLeft: '6px', fontSize: '10px' }}>({detectionConfidence}%)</span>}
             </div>
 
             {/* Metric Floating Card */}
