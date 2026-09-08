@@ -57,7 +57,8 @@ export default function Page() {
   const samplesRef = useRef([])
   const pathRef = useRef([])
 
-  // Physics & Rep State Refs
+  // Physics & Rep State Refs (Includes instant rep count synchronization)
+  const repCountRef = useRef(0)
   const lastPositionRef = useRef(null)
   const lastTimeRef = useRef(null)
   const velocitySamplesRef = useRef([])
@@ -113,6 +114,7 @@ export default function Page() {
     repStartTimeRef.current = null
     concentricStartTimeRef.current = null
     finishingRef.current = false
+    repCountRef.current = 0
 
     setCurrentVelocity(0)
     setPeakVelocity(0)
@@ -153,7 +155,7 @@ export default function Page() {
     }
   }
 
-  // 1. GEOMETRY VALIDATION ENGINE: Enforces circular weight plate geometry
+  // GEOMETRY VALIDATION ENGINE: Enforces circular weight plate geometry
   const validatePlateGeometry = (canvas, x, y, radius) => {
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
     if (!ctx) return false
@@ -285,9 +287,12 @@ export default function Page() {
     return values.reduce((sum, value) => sum + value, 0) / values.length
   }
 
-  // Automated Movement Phase Segmentation Engine
+  // Automated Movement Phase Segmentation Engine with Strict Target Rep Cap & Noise Guard
   const processRepVelocity = (velocity, now) => {
     const absoluteVelocity = Math.abs(velocity)
+
+    // Stop processing if set is already completing
+    if (finishingRef.current) return
 
     if (velocity > MIN_CONCENTRIC_VELOCITY) {
       if (repStateRef.current !== 'concentric') {
@@ -331,8 +336,19 @@ export default function Page() {
             rom = (Math.max(...ys) - Math.min(...ys)) * metersPerPixel
           }
 
+          // NOISE GUARD: Discard micro-movements/un-racking jitter (< 18cm ROM or < 0.25s duration)
+          if (rom < 0.18 || concentricTime < 0.25) {
+            repStateRef.current = 'eccentric'
+            velocitySamplesRef.current = []
+            return
+          }
+
+          // Synchronous Ref Counter Increment to guarantee exact target cap
+          repCountRef.current += 1
+          const newRepNumber = repCountRef.current
+
           const newRep = {
-            rep: repData.length + 1,
+            rep: newRepNumber,
             meanVelocity: Number(mean.toFixed(2)),
             peakVelocity: Number(peak.toFixed(2)),
             rom: Number(rom.toFixed(2)),
@@ -344,17 +360,20 @@ export default function Page() {
           setRepData((prev) => {
             const updated = [...prev, newRep]
             setRepCount(updated.length)
-
-            if (updated.length >= targetReps && !finishingRef.current) {
-              finishingRef.current = true
-              setTimeout(() => {
-                finishRecording()
-              }, 300)
-            }
             return updated
           })
 
           speakVelocity(mean)
+
+          // STRICT FINISH GUARD: Auto-stop instantly when ref hits target reps
+          if (repCountRef.current >= targetReps && !finishingRef.current) {
+            finishingRef.current = true
+            setTimeout(() => {
+              finishRecording()
+            }, 200)
+            return
+          }
+
           velocitySamplesRef.current = []
           repStateRef.current = 'eccentric'
           repStartTimeRef.current = now
@@ -633,6 +652,7 @@ export default function Page() {
     samplesRef.current = []
     velocitySamplesRef.current = []
     repStateRef.current = 'idle'
+    repCountRef.current = 0
 
     const now = performance.now()
     lastPositionRef.current = detectionRef.current.y
@@ -698,11 +718,13 @@ export default function Page() {
       {/* HEADER */}
       <header
         style={{
-          padding: '16px 20px',
+          padding: '16px 24px',
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
           borderBottom: '1px solid #242428',
+          maxWidth: '1200px',
+          margin: '0 auto',
         }}
       >
         <div>
@@ -838,17 +860,18 @@ export default function Page() {
         </section>
       )}
 
-      {/* CAMERA SCREEN (ALIGN / READY / RECORDING) */}
+      {/* CAMERA SCREEN - EXPANDED WIDE VIEWPORT */}
       {(step === 'align' || step === 'ready' || step === 'recording') && (
-        <section style={{ padding: 16, maxWidth: 900, margin: '0 auto' }}>
+        <section style={{ padding: '16px 24px', maxWidth: '1200px', margin: '0 auto' }}>
           <div
             style={{
               position: 'relative',
               width: '100%',
               aspectRatio: '16 / 9',
               background: '#18181B',
-              borderRadius: 14,
+              borderRadius: 16,
               overflow: 'hidden',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
             }}
           >
             <video
@@ -877,11 +900,12 @@ export default function Page() {
               <div
                 style={{
                   position: 'absolute',
-                  top: 12,
-                  left: 12,
-                  right: 12,
+                  top: 16,
+                  left: 16,
+                  right: 16,
+                  maxWidth: '500px',
                   zIndex: 20,
-                  padding: '14px 16px',
+                  padding: '14px 18px',
                   borderRadius: 12,
                   background: 'rgba(15,15,17,.92)',
                   border: '1px solid #303035',
@@ -889,7 +913,7 @@ export default function Page() {
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <strong style={{ fontSize: 12 }}>CAMERA DIAGNOSTIC</strong>
+                  <strong style={{ fontSize: 12, letterSpacing: '0.5px' }}>CAMERA DIAGNOSTIC</strong>
                   <strong style={{ color: readinessScore >= 80 ? '#00FF66' : '#EF4444' }}>
                     {readinessScore}%
                   </strong>
@@ -935,22 +959,23 @@ export default function Page() {
             <div
               style={{
                 position: 'absolute',
-                bottom: 16,
-                left: 16,
+                bottom: 20,
+                left: 20,
                 zIndex: 20,
-                padding: '12px 16px',
-                borderRadius: 12,
+                padding: '14px 20px',
+                borderRadius: 14,
                 background: 'rgba(15,15,17,.92)',
                 border: '1px solid #303035',
+                backdropFilter: 'blur(10px)',
               }}
             >
-              <div style={{ fontSize: 38, lineHeight: 1, fontWeight: 900, color: '#00FF66' }}>
+              <div style={{ fontSize: 44, lineHeight: 1, fontWeight: 900, color: '#00FF66' }}>
                 {currentVelocity.toFixed(2)}
               </div>
-              <div style={{ fontSize: 11, color: '#A1A1AA', marginTop: 5 }}>
+              <div style={{ fontSize: 11, color: '#A1A1AA', marginTop: 5, fontWeight: 700 }}>
                 MEAN VELOCITY · M/S
               </div>
-              <div style={{ marginTop: 7, fontSize: 13, fontWeight: 700 }}>
+              <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800 }}>
                 REP {repCount}/{targetReps}
               </div>
             </div>
@@ -960,15 +985,16 @@ export default function Page() {
               <div
                 style={{
                   position: 'absolute',
-                  top: 16,
+                  top: 20,
                   left: '50%',
                   transform: 'translateX(-50%)',
                   zIndex: 20,
-                  padding: '8px 14px',
+                  padding: '8px 18px',
                   borderRadius: 20,
-                  background: 'rgba(239,68,68,.9)',
-                  fontSize: 11,
+                  background: 'rgba(239,68,68,.95)',
+                  fontSize: 12,
                   fontWeight: 900,
+                  letterSpacing: '1px',
                 }}
               >
                 ● RECORDING
@@ -982,15 +1008,16 @@ export default function Page() {
                 onClick={handleReady}
                 style={{
                   position: 'absolute',
-                  right: 16,
-                  bottom: 16,
+                  right: 20,
+                  bottom: 20,
                   zIndex: 30,
-                  padding: '13px 20px',
-                  borderRadius: 9,
+                  padding: '14px 24px',
+                  borderRadius: 10,
                   border: 'none',
                   background: readinessScore >= 80 ? '#00FF66' : '#3F3F46',
                   color: readinessScore >= 80 ? '#000' : '#A1A1AA',
                   fontWeight: 900,
+                  fontSize: 14,
                   cursor: readinessScore >= 80 ? 'pointer' : 'not-allowed',
                 }}
               >
@@ -1003,18 +1030,19 @@ export default function Page() {
                 onClick={handleStartRecording}
                 style={{
                   position: 'absolute',
-                  bottom: 16,
+                  bottom: 20,
                   left: '50%',
                   transform: 'translateX(-50%)',
                   zIndex: 30,
-                  padding: '14px 32px',
-                  borderRadius: 10,
+                  padding: '16px 40px',
+                  borderRadius: 12,
                   border: 'none',
                   background: '#00FF66',
                   color: '#000',
                   fontWeight: 900,
-                  fontSize: 15,
+                  fontSize: 16,
                   cursor: 'pointer',
+                  boxShadow: '0 10px 25px rgba(0,255,102,0.3)',
                 }}
               >
                 START SET
@@ -1024,7 +1052,7 @@ export default function Page() {
 
           <div
             style={{
-              marginTop: 12,
+              marginTop: 14,
               padding: 14,
               background: '#18181B',
               borderRadius: 10,
@@ -1042,7 +1070,7 @@ export default function Page() {
 
       {/* SUMMARY DASHBOARD SCREEN */}
       {step === 'summary' && (
-        <section style={{ maxWidth: 700, margin: '0 auto', padding: 24 }}>
+        <section style={{ maxWidth: 800, margin: '0 auto', padding: 24 }}>
           <div style={{ marginBottom: 24 }}>
             <div style={{ color: '#00FF66', fontSize: 12, fontWeight: 900, letterSpacing: 1 }}>
               SET COMPLETE
