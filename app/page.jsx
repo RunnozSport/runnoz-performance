@@ -1,11 +1,38 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
 
+// Exercise Presets with VBT Athletic Configurations
+const EXERCISE_CONFIGS = {
+  'Back Squat': { metricMode: 'MEAN', mvt: 0.30, defaultLoad: 100 },
+  'Bench Press': { metricMode: 'MEAN', mvt: 0.18, defaultLoad: 80 },
+  'Deadlift': { metricMode: 'MEAN', mvt: 0.15, defaultLoad: 120 },
+  'Power Clean': { metricMode: 'PEAK', mvt: 0.90, defaultLoad: 60 },
+  'Trap Bar Jump': { metricMode: 'PEAK', mvt: 1.10, defaultLoad: 40 }
+}
+
+// Athletic Velocity Zones (m/s)
+const getVbtZone = (vel, mode) => {
+  if (mode === 'PEAK') {
+    if (vel >= 1.80) return { name: 'Starting Strength', color: '#3B82F6' }
+    if (vel >= 1.40) return { name: 'Speed-Strength', color: '#10B981' }
+    if (vel >= 1.10) return { name: 'Strength-Speed', color: '#F59E0B' }
+    return { name: 'Accelerative Strength', color: '#EF4444' }
+  } else {
+    if (vel >= 1.30) return { name: 'Starting Strength', color: '#3B82F6' }
+    if (vel >= 1.00) return { name: 'Speed-Strength', color: '#10B981' }
+    if (vel >= 0.75) return { name: 'Strength-Speed', color: '#F59E0B' }
+    if (vel >= 0.50) return { name: 'Accelerative Strength', color: '#8B5CF6' }
+    return { name: 'Absolute Strength', color: '#EF4444' }
+  }
+}
+
 export default function Page() {
   const [step, setStep] = useState('setup')
   const [exercise, setExercise] = useState('Back Squat')
   const [loadKg, setLoadKg] = useState(100)
   const [targetReps, setTargetReps] = useState(3)
+  const [maxVelLossPercent, setMaxVelLossPercent] = useState(15) // Fatigue threshold
+
   const [isPlateDetected, setIsPlateDetected] = useState(false)
   const [plateColor, setPlateColor] = useState('red')
   const [currentVelocity, setCurrentVelocity] = useState(0)
@@ -13,15 +40,7 @@ export default function Page() {
   const [repData, setRepData] = useState([])
   const [cameraError, setCameraError] = useState('')
   const [audioFeedback, setAudioFeedback] = useState(true)
-
-  // PRE-FLIGHT CHECKLIST STATE
-  const [readinessScore, setReadinessScore] = useState(0)
-  const [checks, setChecklist] = useState({
-    plateLocked: false,
-    framingDistance: false,
-    fpsReady: false,
-    lightingReady: false
-  })
+  const [fatigueWarning, setFatigueWarning] = useState(false)
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
@@ -36,13 +55,9 @@ export default function Page() {
   const lastTimeRef = useRef(null)
   const pathPointsRef = useRef([])
 
-  // FPS & Quality Measurement Refs
-  const frameCountRef = useRef(0)
-  const lastFpsTimeRef = useRef(performance.now())
-  const currentFpsRef = useRef(0)
-
   const isConcentricRef = useRef(false)
   const concentricVelocitiesRef = useRef([])
+  const peakVelInRepRef = useRef(0)
 
   useEffect(() => {
     stepRef.current = step
@@ -72,7 +87,7 @@ export default function Page() {
     }
   }
 
-  // Optical Tracking & Quality Diagnostic Engine
+  // Optical SAD Template Search
   const detectPlate = (video, displayWidth, displayHeight) => {
     const procCanvas = procCanvasRef.current
     if (!procCanvas) return null
@@ -92,7 +107,7 @@ export default function Page() {
       const initY = Math.floor(pH / 2)
       plateTemplateRef.current = pCtx.getImageData(initX - tSize / 2, initY - tSize / 2, tSize, tSize)
       platePosRef.current = { x: displayWidth / 2, y: displayHeight / 2, radius: 28 }
-      return { x: displayWidth / 2, y: displayHeight / 2, confidence: 100, contrast: 80 }
+      return { x: displayWidth / 2, y: displayHeight / 2, confidence: 100 }
     }
 
     const currentPos = platePosRef.current
@@ -148,12 +163,11 @@ export default function Page() {
     return {
       x: platePosRef.current.x,
       y: platePosRef.current.y,
-      confidence: minDiff < 16000 ? 95 : 10,
-      contrast: minDiff
+      confidence: minDiff < 16000 ? 95 : 10
     }
   }
 
-  // 60 FPS Main Loop with Diagnostic Evaluation
+  // 60 FPS Optical Loop
   const runTracker = () => {
     const track = () => {
       if (!isTrackingRef.current || !videoRef.current || !canvasRef.current) return
@@ -163,14 +177,6 @@ export default function Page() {
       const ctx = canvas.getContext('2d')
       const now = performance.now()
 
-      // Calculate Real-Time FPS
-      frameCountRef.current += 1
-      if (now - lastFpsTimeRef.current >= 1000) {
-        currentFpsRef.current = frameCountRef.current
-        frameCountRef.current = 0
-        lastFpsTimeRef.current = now
-      }
-
       if (video.readyState >= 2) {
         const detected = detectPlate(video, canvas.width, canvas.height)
         const isLocked = detected && detected.confidence > 50
@@ -178,35 +184,9 @@ export default function Page() {
         setPlateColor(isLocked ? 'green' : 'red')
         setIsPlateDetected(isLocked)
 
-        // Evaluate Diagnostic Checklist in Alignment Step
-        if (stepRef.current === 'align') {
-          const isFpsOk = currentFpsRef.current >= 45
-          const isLightingOk = detected ? detected.confidence > 70 : false
-          const isFramingOk = platePosRef.current
-            ? platePosRef.current.x > canvas.width * 0.15 && platePosRef.current.x < canvas.width * 0.85
-            : false
-
-          const newChecks = {
-            plateLocked: isLocked,
-            framingDistance: isFramingOk,
-            fpsReady: isFpsOk,
-            lightingReady: isLightingOk
-          }
-
-          setChecklist(newChecks)
-
-          // Calculate Overall Readiness %
-          let passCount = 0
-          if (isLocked) passCount += 30
-          if (isFramingOk) passCount += 25
-          if (isFpsOk) passCount += 25
-          if (isLightingOk) passCount += 20
-
-          setReadinessScore(passCount)
-        }
-
         if (isLocked && platePosRef.current) {
           const plate = platePosRef.current
+          const config = EXERCISE_CONFIGS[exercise] || EXERCISE_CONFIGS['Back Squat']
 
           if (stepRef.current === 'recording') {
             pathPointsRef.current.push({ x: plate.x, y: plate.y })
@@ -215,7 +195,7 @@ export default function Page() {
             if (lastYRef.current !== null && lastTimeRef.current !== null) {
               const deltaY = lastYRef.current - plate.y
               const deltaTime = (now - lastTimeRef.current) / 1000
-              const metersPerPixel = 0.0028
+              const metersPerPixel = 0.0028 // Olympic Bumper Plate Calibrated Ratio
 
               if (deltaTime > 0 && deltaTime < 0.2) {
                 const vel = (deltaY * metersPerPixel) / deltaTime
@@ -224,18 +204,40 @@ export default function Page() {
                   setCurrentVelocity(Math.abs(vel))
                 }
 
+                // Concentric Phase (> 0.04 m/s upward displacement)
                 if (vel > 0.04) {
                   if (!isConcentricRef.current) isConcentricRef.current = true
                   concentricVelocitiesRef.current.push(vel)
+                  if (vel > peakVelInRepRef.current) peakVelInRepRef.current = vel
                 } else if (vel < -0.04 && isConcentricRef.current) {
                   isConcentricRef.current = false
-                  const vels = concentricVelocitiesRef.current
-                  const meanVel = vels.length > 0 ? vels.reduce((a, b) => a + b, 0) / vels.length : currentVelocity
-                  const finalRepVel = parseFloat(meanVel.toFixed(2))
+
+                  // Mode-Specific VBT Score
+                  let finalRepVel = 0
+                  if (config.metricMode === 'PEAK') {
+                    finalRepVel = parseFloat(peakVelInRepRef.current.toFixed(2))
+                  } else {
+                    const vels = concentricVelocitiesRef.current
+                    const meanVel = vels.length > 0 ? vels.reduce((a, b) => a + b, 0) / vels.length : currentVelocity
+                    finalRepVel = parseFloat(meanVel.toFixed(2))
+                  }
+
+                  const zone = getVbtZone(finalRepVel, config.metricMode)
 
                   setRepData((prev) => {
-                    const updated = [...prev, { rep: prev.length + 1, vel: finalRepVel, eccn: 0.6, rom: 55 }]
+                    const firstRepVel = prev.length > 0 ? prev[0].vel : finalRepVel
+                    const velLoss = firstRepVel > 0 ? ((firstRepVel - finalRepVel) / firstRepVel) * 100 : 0
+
+                    if (velLoss >= maxVelLossPercent) {
+                      setFatigueWarning(true)
+                    }
+
+                    const updated = [
+                      ...prev,
+                      { rep: prev.length + 1, vel: finalRepVel, zone, velLoss: Math.round(velLoss) }
+                    ]
                     setRepCount(updated.length)
+
                     if (updated.length >= targetReps) {
                       setTimeout(() => finishRecording(), 100)
                     }
@@ -244,6 +246,7 @@ export default function Page() {
 
                   speakVelocity(finalRepVel)
                   concentricVelocitiesRef.current = []
+                  peakVelInRepRef.current = 0
                 }
               }
             }
@@ -333,8 +336,10 @@ export default function Page() {
   const handleStartRecording = () => {
     setRepData([])
     setRepCount(0)
+    setFatigueWarning(false)
     pathPointsRef.current = []
     concentricVelocitiesRef.current = []
+    peakVelInRepRef.current = 0
     lastYRef.current = platePosRef.current?.y || null
     lastTimeRef.current = performance.now()
     setStep('recording')
@@ -350,6 +355,7 @@ export default function Page() {
     setRepData([])
     setRepCount(0)
     setCurrentVelocity(0)
+    setFatigueWarning(false)
     platePosRef.current = null
     plateTemplateRef.current = null
     setStep('setup')
@@ -383,13 +389,16 @@ export default function Page() {
     setIsPlateDetected(true)
   }
 
+  const activeConfig = EXERCISE_CONFIGS[exercise] || EXERCISE_CONFIGS['Back Squat']
+  const activeZone = getVbtZone(currentVelocity, activeConfig.metricMode)
+
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#0D0D0E', color: '#FFF', fontFamily: 'system-ui', paddingBottom: '80px' }}>
       {/* Header */}
       <div style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1C1C1F' }}>
         <div>
           <h1 style={{ fontSize: '18px', fontWeight: '700', margin: 0 }}>{exercise}</h1>
-          <p style={{ fontSize: '12px', color: '#A1A1AA', margin: '2px 0 0 0' }}>{loadKg}kg × {targetReps} reps</p>
+          <p style={{ fontSize: '12px', color: '#A1A1AA', margin: '2px 0 0 0' }}>{loadKg}kg × {targetReps} reps | Mode: {activeConfig.metricMode}</p>
         </div>
         <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
           <button onClick={() => setAudioFeedback(!audioFeedback)} style={{ fontSize: '18px', border: 'none', background: 'none', cursor: 'pointer', opacity: audioFeedback ? 1 : 0.4 }}>🔊</button>
@@ -400,109 +409,81 @@ export default function Page() {
       {/* STEP 1: SETUP */}
       {step === 'setup' && (
         <div style={{ padding: '24px', maxWidth: '500px', margin: '0 auto' }}>
-          <h2 style={{ fontSize: '20px', fontWeight: '800', marginBottom: '20px' }}>Setup</h2>
+          <h2 style={{ fontSize: '20px', fontWeight: '800', marginBottom: '20px' }}>VBT Athletic Setup</h2>
+          
           <div style={{ marginBottom: '20px' }}>
-            <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>EXERCISE</label>
-            <select value={exercise} onChange={(e) => setExercise(e.target.value)} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }}>
-              <option>Back Squat</option>
-              <option>Bench Press</option>
-              <option>Deadlift</option>
+            <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>SELECT EXERCISE</label>
+            <select
+              value={exercise}
+              onChange={(e) => {
+                const ex = e.target.value
+                setExercise(ex)
+                setLoadKg(EXERCISE_CONFIGS[ex].defaultLoad)
+              }}
+              style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF', fontSize: '14px' }}
+            >
+              {Object.keys(EXERCISE_CONFIGS).map((ex) => (
+                <option key={ex} value={ex}>{ex} ({EXERCISE_CONFIGS[ex].metricMode} Velocity)</option>
+              ))}
             </select>
           </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
             <div>
               <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>LOAD (KG)</label>
               <input type="number" value={loadKg} onChange={(e) => setLoadKg(Number(e.target.value))} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }} />
             </div>
             <div>
-              <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>REPS</label>
+              <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>TARGET REPS</label>
               <input type="number" value={targetReps} onChange={(e) => setTargetReps(Number(e.target.value))} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }} />
             </div>
           </div>
-          <button onClick={startCamera} style={{ width: '100%', padding: '14px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontSize: '16px', fontWeight: '800', cursor: 'pointer' }}>Start Camera Alignment →</button>
+
+          <div style={{ marginBottom: '24px' }}>
+            <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>MAX VELOCITY LOSS CAP (%)</label>
+            <input type="number" value={maxVelLossPercent} onChange={(e) => setMaxVelLossPercent(Number(e.target.value))} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }} />
+            <span style={{ fontSize: '10px', color: '#71717A', marginTop: '4px', display: 'block' }}>Alerts when rep speed drops beyond this percentage.</span>
+          </div>
+
+          <button onClick={startCamera} style={{ width: '100%', padding: '14px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontSize: '16px', fontWeight: '800', cursor: 'pointer' }}>Start VBT Alignment →</button>
         </div>
       )}
 
-      {/* STEP 2: CAMERA ALIGNMENT & PRE-FLIGHT CHECKLIST */}
+      {/* STEP 2: CAMERA ALIGNMENT & RECORDING */}
       {(step === 'align' || step === 'ready' || step === 'recording') && (
         <div style={{ padding: '16px' }}>
           <div style={{ position: 'relative', width: '100%', aspectRatio: '9/16', backgroundColor: '#18181B', borderRadius: '12px', overflow: 'hidden' }}>
             <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             <canvas ref={canvasRef} onClick={handleTapToLock} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10, cursor: 'crosshair' }} />
 
-            {/* PRE-RECORDING ACCURACY DIAGNOSTIC OVERLAY (ALIGN STEP) */}
-            {step === 'align' && (
-              <div style={{
-                position: 'absolute',
-                top: '12px',
-                left: '12px',
-                right: '12px',
-                backgroundColor: 'rgba(18, 18, 20, 0.92)',
-                backdropFilter: 'blur(10px)',
-                borderRadius: '12px',
-                padding: '12px 16px',
-                border: '1px solid #27272A',
-                zIndex: 25
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: '800', color: '#E4E4E7' }}>ACCURACY DIAGNOSTIC</span>
-                  <span style={{ fontSize: '14px', fontWeight: '900', color: readinessScore >= 95 ? '#00FF66' : '#EF4444' }}>
-                    {readinessScore}% READY
-                  </span>
-                </div>
+            {/* Lock Badge */}
+            <div style={{ position: 'absolute', top: '12px', left: '12px', backgroundColor: plateColor === 'green' ? 'rgba(0, 255, 102, 0.2)' : 'rgba(239, 68, 68, 0.2)', border: `2px solid ${plateColor === 'green' ? '#00FF66' : '#EF4444'}`, color: plateColor === 'green' ? '#00FF66' : '#EF4444', fontSize: '12px', fontWeight: '800', padding: '6px 12px', borderRadius: '20px', zIndex: 20 }}>
+              {plateColor === 'green' ? '🟢 PLATE LOCKED' : '🔴 SCANNING PLATE...'}
+            </div>
 
-                {/* Progress Bar */}
-                <div style={{ width: '100%', height: '6px', backgroundColor: '#27272A', borderRadius: '3px', overflow: 'hidden', marginBottom: '10px' }}>
-                  <div style={{ width: `${readinessScore}%`, height: '100%', backgroundColor: readinessScore >= 95 ? '#00FF66' : '#EF4444', transition: 'width 0.3s' }} />
-                </div>
-
-                {/* Diagnostic Criteria List */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '10px', color: '#A1A1AA' }}>
-                  <div style={{ color: checks.plateLocked ? '#00FF66' : '#A1A1AA' }}>
-                    {checks.plateLocked ? '✓' : '✗'} Weight Plate Locked
-                  </div>
-                  <div style={{ color: checks.framingDistance ? '#00FF66' : '#A1A1AA' }}>
-                    {checks.framingDistance ? '✓' : '✗'} Distance (1.5-2.5m)
-                  </div>
-                  <div style={{ color: checks.fpsReady ? '#00FF66' : '#A1A1AA' }}>
-                    {checks.fpsReady ? '✓' : '✗'} Camera FPS (50+)
-                  </div>
-                  <div style={{ color: checks.lightingReady ? '#00FF66' : '#A1A1AA' }}>
-                    {checks.lightingReady ? '✓' : '✗'} Contrast / Lighting
-                  </div>
-                </div>
+            {/* Fatigue Threshold Warning Overlay */}
+            {fatigueWarning && (
+              <div style={{ position: 'absolute', top: '50px', left: '12px', right: '12px', backgroundColor: 'rgba(239, 68, 68, 0.95)', padding: '10px 14px', borderRadius: '8px', textAlign: 'center', fontWeight: '800', fontSize: '13px', zIndex: 35, boxShadow: '0 4px 15px rgba(239, 68, 68, 0.5)' }}>
+                ⚠️ FATIGUE CAP REACHED ({maxVelLossPercent}% SPEED DROP)
               </div>
             )}
 
             {/* Floating Metric Card Overlay */}
-            <div style={{ position: 'absolute', bottom: '16px', left: '16px', backgroundColor: 'rgba(18, 18, 20, 0.9)', borderRadius: '12px', padding: '12px 16px', border: '1px solid #27272A', zIndex: 20 }}>
+            <div style={{ position: 'absolute', bottom: '16px', left: '16px', backgroundColor: 'rgba(18, 18, 20, 0.92)', borderRadius: '12px', padding: '12px 16px', border: '1px solid #27272A', zIndex: 20 }}>
               <div style={{ fontSize: '32px', fontWeight: '900', color: '#00FF66' }}>{currentVelocity.toFixed(2)}</div>
-              <div style={{ fontSize: '11px', color: '#A1A1AA', marginTop: '4px' }}>Mean Vel (m/s)</div>
-              <div style={{ fontSize: '13px', color: '#E4E4E7', marginTop: '6px', fontWeight: '600' }}>{repCount}/{targetReps}</div>
+              <div style={{ fontSize: '11px', color: '#A1A1AA', marginTop: '2px' }}>{activeConfig.metricMode} VELOCITY (m/s)</div>
+              
+              {/* VBT Athletic Zone Indicator */}
+              <div style={{ marginTop: '8px', padding: '3px 8px', borderRadius: '4px', backgroundColor: activeZone.color, color: '#FFF', fontSize: '10px', fontWeight: '800', display: 'inline-block' }}>
+                {activeZone.name.toUpperCase()}
+              </div>
+
+              <div style={{ fontSize: '12px', color: '#E4E4E7', marginTop: '6px', fontWeight: '600' }}>{repCount}/{targetReps} REPS</div>
             </div>
 
             {/* Guided Flow Buttons */}
-            {step === 'align' && (
-              <button
-                onClick={handleReady}
-                disabled={readinessScore < 95}
-                style={{
-                  position: 'absolute',
-                  bottom: '16px',
-                  right: '16px',
-                  padding: '12px 24px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  backgroundColor: readinessScore >= 95 ? '#00FF66' : '#27272A',
-                  color: readinessScore >= 95 ? '#000' : '#71717A',
-                  fontWeight: '800',
-                  fontSize: '14px',
-                  cursor: readinessScore >= 95 ? 'pointer' : 'not-allowed',
-                  zIndex: 30
-                }}
-              >
-                {readinessScore >= 95 ? 'READY ✓' : 'ALIGN CAMERA...'}
-              </button>
+            {step === 'align' && plateColor === 'green' && (
+              <button onClick={handleReady} style={{ position: 'absolute', bottom: '16px', right: '16px', padding: '12px 24px', borderRadius: '8px', border: 'none', backgroundColor: '#00FF66', color: '#000', fontWeight: '800', fontSize: '14px', cursor: 'pointer', zIndex: 30 }}>READY ✓</button>
             )}
 
             {step === 'ready' && (
@@ -516,17 +497,17 @@ export default function Page() {
         </div>
       )}
 
-      {/* STEP 3: SUMMARY */}
+      {/* STEP 3: SUMMARY DASHBOARD */}
       {step === 'summary' && repData.length > 0 && (
         <div style={{ padding: '20px 16px' }}>
-          <div style={{ fontSize: '18px', fontWeight: '800', color: '#EF4444', marginBottom: '16px' }}>✓ Set Complete</div>
+          <div style={{ fontSize: '18px', fontWeight: '800', color: '#EF4444', marginBottom: '16px' }}>✓ Set Complete ({exercise})</div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
-            <div>
-              <div style={{ fontSize: '12px', color: '#A1A1AA', marginBottom: '4px' }}>Best</div>
+            <div style={{ backgroundColor: '#18181C', padding: '12px', borderRadius: '8px', border: '1px solid #27272A' }}>
+              <div style={{ fontSize: '12px', color: '#A1A1AA', marginBottom: '4px' }}>Best ({activeConfig.metricMode})</div>
               <div style={{ fontSize: '24px', fontWeight: '800', color: '#FFF' }}>{Math.max(...repData.map((r) => r.vel)).toFixed(2)} m/s</div>
             </div>
-            <div>
+            <div style={{ backgroundColor: '#18181C', padding: '12px', borderRadius: '8px', border: '1px solid #27272A' }}>
               <div style={{ fontSize: '12px', color: '#A1A1AA', marginBottom: '4px' }}>Average</div>
               <div style={{ fontSize: '24px', fontWeight: '800', color: '#FFF' }}>{(repData.reduce((a, b) => a + b.vel, 0) / repData.length).toFixed(2)} m/s</div>
             </div>
@@ -535,16 +516,18 @@ export default function Page() {
           <div style={{ display: 'flex', gap: '8px', height: '120px', alignItems: 'flex-end', paddingBottom: '12px', marginBottom: '20px', borderBottom: '1px solid #27272A' }}>
             {repData.map((r, i) => (
               <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <div style={{ width: '100%', height: `${(r.vel / 1.2) * 100}%`, backgroundColor: '#EF4444', borderRadius: '4px 4px 0 0' }} />
-                <div style={{ fontSize: '11px', color: '#A1A1AA', marginTop: '8px' }}>{r.rep}</div>
+                <div style={{ width: '100%', height: `${(r.vel / 1.8) * 100}%`, backgroundColor: r.zone.color, borderRadius: '4px 4px 0 0' }} />
+                <div style={{ fontSize: '10px', color: '#A1A1AA', marginTop: '8px' }}>R{r.rep}</div>
               </div>
             ))}
           </div>
 
           {repData.map((r) => (
-            <div key={r.rep} style={{ display: 'grid', gridTemplateColumns: '40px 1fr', padding: '12px 0', borderTop: '1px solid #1C1C1F' }}>
+            <div key={r.rep} style={{ display: 'grid', gridTemplateColumns: '50px 1fr 110px 60px', padding: '12px 0', borderTop: '1px solid #1C1C1F', alignItems: 'center' }}>
               <div style={{ color: '#A1A1AA', fontSize: '12px' }}>Rep {r.rep}</div>
               <div style={{ fontSize: '14px', fontWeight: '700', color: '#FFF' }}>{r.vel} m/s</div>
+              <div style={{ fontSize: '10px', fontWeight: '800', color: r.zone.color }}>{r.zone.name}</div>
+              <div style={{ fontSize: '11px', color: r.velLoss >= maxVelLossPercent ? '#EF4444' : '#A1A1AA', textAlign: 'right' }}>-{r.velLoss}%</div>
             </div>
           ))}
 
