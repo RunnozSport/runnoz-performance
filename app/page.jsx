@@ -1,347 +1,601 @@
 'use client'
-import { useState, useRef, useEffect } from 'react'
 
-// Exercise Presets with VBT Athletic Configurations
-const EXERCISE_CONFIGS = {
-  'Back Squat': { metricMode: 'MEAN', mvt: 0.30, defaultLoad: 100 },
-  'Bench Press': { metricMode: 'MEAN', mvt: 0.18, defaultLoad: 80 },
-  'Deadlift': { metricMode: 'MEAN', mvt: 0.15, defaultLoad: 120 },
-  'Power Clean': { metricMode: 'PEAK', mvt: 0.90, defaultLoad: 60 },
-  'Trap Bar Jump': { metricMode: 'PEAK', mvt: 1.10, defaultLoad: 40 }
-}
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 
-// Athletic Velocity Zones (m/s)
-const getVbtZone = (vel, mode) => {
-  if (mode === 'PEAK') {
-    if (vel >= 1.80) return { name: 'Starting Strength', color: '#3B82F6' }
-    if (vel >= 1.40) return { name: 'Speed-Strength', color: '#10B981' }
-    if (vel >= 1.10) return { name: 'Strength-Speed', color: '#F59E0B' }
-    return { name: 'Accelerative Strength', color: '#EF4444' }
-  } else {
-    if (vel >= 1.30) return { name: 'Starting Strength', color: '#3B82F6' }
-    if (vel >= 1.00) return { name: 'Speed-Strength', color: '#10B981' }
-    if (vel >= 0.75) return { name: 'Strength-Speed', color: '#F59E0B' }
-    if (vel >= 0.50) return { name: 'Accelerative Strength', color: '#8B5CF6' }
-    return { name: 'Absolute Strength', color: '#EF4444' }
-  }
-}
+const PROCESS_WIDTH = 640
+const PROCESS_HEIGHT = 360
+const DEFAULT_METERS_PER_PIXEL = 0.0028
+const MIN_CONCENTRIC_VELOCITY = 0.04
+const MIN_MOVEMENT_VELOCITY = 0.015
+const MAX_FRAME_INTERVAL = 0.25
 
 export default function Page() {
   const [step, setStep] = useState('setup')
   const [exercise, setExercise] = useState('Back Squat')
   const [loadKg, setLoadKg] = useState(100)
   const [targetReps, setTargetReps] = useState(3)
-  const [maxVelLossPercent, setMaxVelLossPercent] = useState(15) // Fatigue threshold
 
-  const [isPlateDetected, setIsPlateDetected] = useState(false)
-  const [plateColor, setPlateColor] = useState('red')
   const [currentVelocity, setCurrentVelocity] = useState(0)
+  const [peakVelocity, setPeakVelocity] = useState(0)
   const [repCount, setRepCount] = useState(0)
   const [repData, setRepData] = useState([])
+
+  const [plateDetected, setPlateDetected] = useState(false)
+  const [trackingConfidence, setTrackingConfidence] = useState(0)
+
   const [cameraError, setCameraError] = useState('')
   const [audioFeedback, setAudioFeedback] = useState(true)
-  const [fatigueWarning, setFatigueWarning] = useState(false)
+
+  const [fps, setFps] = useState(0)
+  const [readinessScore, setReadinessScore] = useState(0)
+
+  const [checks, setChecks] = useState({
+    tracking: false,
+    framing: false,
+    fps: false,
+    lighting: false,
+    calibration: false,
+  })
+
+  const [metersPerPixel] = useState(DEFAULT_METERS_PER_PIXEL)
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
-  const procCanvasRef = useRef(null)
-  const rafRef = useRef(null)
-  const isTrackingRef = useRef(false)
+  const processCanvasRef = useRef(null)
+
+  const animationRef = useRef(null)
+  const streamRef = useRef(null)
+
+  const trackingRef = useRef(false)
   const stepRef = useRef('setup')
 
-  const platePosRef = useRef(null)
-  const plateTemplateRef = useRef(null)
-  const lastYRef = useRef(null)
-  const lastTimeRef = useRef(null)
-  const pathPointsRef = useRef([])
+  const detectionRef = useRef(null)
+  const templateRef = useRef(null)
 
-  const isConcentricRef = useRef(false)
-  const concentricVelocitiesRef = useRef([])
-  const peakVelInRepRef = useRef(0)
+  const samplesRef = useRef([])
+  const pathRef = useRef([])
+
+  const lastPositionRef = useRef(null)
+  const lastTimeRef = useRef(null)
+
+  const velocitySamplesRef = useRef([])
+  const repStateRef = useRef('idle')
+
+  const repStartTimeRef = useRef(null)
+  const concentricStartTimeRef = useRef(null)
+
+  const fpsFrameCountRef = useRef(0)
+  const fpsTimeRef = useRef(performance.now())
+
+  const finishingRef = useRef(false)
 
   useEffect(() => {
     stepRef.current = step
   }, [step])
 
   useEffect(() => {
-    procCanvasRef.current = document.createElement('canvas')
-    procCanvasRef.current.width = 320
-    procCanvasRef.current.height = 180
+    const canvas = document.createElement('canvas')
+    canvas.width = PROCESS_WIDTH
+    canvas.height = PROCESS_HEIGHT
+    processCanvasRef.current = canvas
 
     return () => {
-      isTrackingRef.current = false
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-      if (videoRef.current?.srcObject) {
-        videoRef.current.srcObject.getTracks().forEach((t) => t.stop())
-      }
+      stopCamera()
     }
   }, [])
 
-  const speakVelocity = (vel) => {
-    if (!audioFeedback || typeof window === 'undefined') return
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel()
-      const msg = new SpeechSynthesisUtterance(`${vel.toFixed(2)}`)
-      msg.rate = 1.2
-      window.speechSynthesis.speak(msg)
+  const speakVelocity = useCallback(
+    (velocity) => {
+      if (!audioFeedback) return
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel()
+        const message = new SpeechSynthesisUtterance(velocity.toFixed(2))
+        message.rate = 1.15
+        message.pitch = 1
+        window.speechSynthesis.speak(message)
+      }
+    },
+    [audioFeedback]
+  )
+
+  const resetTrackingState = () => {
+    detectionRef.current = null
+    templateRef.current = null
+    samplesRef.current = []
+    pathRef.current = []
+    lastPositionRef.current = null
+    lastTimeRef.current = null
+    velocitySamplesRef.current = []
+    repStateRef.current = 'idle'
+    repStartTimeRef.current = null
+    concentricStartTimeRef.current = null
+    finishingRef.current = false
+
+    setCurrentVelocity(0)
+    setPeakVelocity(0)
+    setRepCount(0)
+    setRepData([])
+    setPlateDetected(false)
+    setTrackingConfidence(0)
+  }
+
+  const createTemplate = (video, x, y) => {
+    const canvas = processCanvasRef.current
+    if (!canvas) return false
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return false
+
+    ctx.drawImage(video, 0, 0, PROCESS_WIDTH, PROCESS_HEIGHT)
+    const size = 28
+    const px = Math.max(size / 2, Math.min(PROCESS_WIDTH - size / 2, x))
+    const py = Math.max(size / 2, Math.min(PROCESS_HEIGHT - size / 2, y))
+
+    try {
+      templateRef.current = ctx.getImageData(
+        Math.round(px - size / 2),
+        Math.round(py - size / 2),
+        size,
+        size
+      )
+      detectionRef.current = {
+        x: px,
+        y: py,
+        radius: 28,
+        confidence: 100,
+      }
+      return true
+    } catch {
+      return false
     }
   }
 
-  // Optical SAD Template Search
-  const detectPlate = (video, displayWidth, displayHeight) => {
-    const procCanvas = procCanvasRef.current
-    if (!procCanvas) return null
+  const trackTemplate = (video) => {
+    const canvas = processCanvasRef.current
+    const template = templateRef.current
+    const previous = detectionRef.current
 
-    const pCtx = procCanvas.getContext('2d', { willReadFrequently: true })
-    const pW = procCanvas.width
-    const pH = procCanvas.height
+    if (!canvas || !template || !previous) return null
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return null
 
-    pCtx.drawImage(video, 0, 0, pW, pH)
+    ctx.drawImage(video, 0, 0, PROCESS_WIDTH, PROCESS_HEIGHT)
+    const templateSize = template.width
+    const searchRadius = 55
 
-    const scaleX = displayWidth / pW
-    const scaleY = displayHeight / pH
-    const tSize = 20
+    const startX = Math.max(templateSize / 2, previous.x - searchRadius)
+    const endX = Math.min(PROCESS_WIDTH - templateSize / 2, previous.x + searchRadius)
+    const startY = Math.max(templateSize / 2, previous.y - searchRadius)
+    const endY = Math.min(PROCESS_HEIGHT - templateSize / 2, previous.y + searchRadius)
 
-    if (!platePosRef.current || !plateTemplateRef.current) {
-      const initX = Math.floor(pW / 2)
-      const initY = Math.floor(pH / 2)
-      plateTemplateRef.current = pCtx.getImageData(initX - tSize / 2, initY - tSize / 2, tSize, tSize)
-      platePosRef.current = { x: displayWidth / 2, y: displayHeight / 2, radius: 28 }
-      return { x: displayWidth / 2, y: displayHeight / 2, confidence: 100 }
-    }
+    const width = Math.max(1, Math.ceil(endX - startX + templateSize))
+    const height = Math.max(1, Math.ceil(endY - startY + templateSize))
 
-    const currentPos = platePosRef.current
-    const anchorPX = Math.floor(currentPos.x / scaleX)
-    const anchorPY = Math.floor(currentPos.y / scaleY)
+    const image = ctx.getImageData(
+      Math.floor(startX - templateSize / 2),
+      Math.floor(startY - templateSize / 2),
+      width,
+      height
+    )
 
-    const searchRadius = 25
-    const startX = Math.max(tSize / 2, anchorPX - searchRadius)
-    const endX = Math.min(pW - tSize / 2, anchorPX + searchRadius)
-    const startY = Math.max(tSize / 2, anchorPY - searchRadius)
-    const endY = Math.min(pH - tSize / 2, anchorPY + searchRadius)
+    const templateData = template.data
+    const searchData = image.data
+    let bestScore = Infinity
+    let bestX = previous.x
+    let bestY = previous.y
 
-    const searchWidth = endX - startX + tSize
-    const searchHeight = endY - startY + tSize
+    const luminance = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b
 
-    if (searchWidth <= 0 || searchHeight <= 0) return null
+    for (let sy = 0; sy <= height - templateSize; sy += 3) {
+      for (let sx = 0; sx <= width - templateSize; sx += 3) {
+        let difference = 0
+        let count = 0
 
-    const searchArea = pCtx.getImageData(startX - tSize / 2, startY - tSize / 2, searchWidth, searchHeight)
-    const templateData = plateTemplateRef.current.data
-    const searchData = searchArea.data
+        for (let ty = 0; ty < templateSize; ty += 4) {
+          for (let tx = 0; tx < templateSize; tx += 4) {
+            const sIndex = ((sy + ty) * width + (sx + tx)) * 4
+            const tIndex = (ty * templateSize + tx) * 4
 
-    let minDiff = Infinity
-    let bestX = anchorPX
-    let bestY = anchorPY
+            const sr = searchData[sIndex]
+            const sg = searchData[sIndex + 1]
+            const sb = searchData[sIndex + 2]
 
-    for (let sy = 0; sy < searchHeight - tSize; sy += 2) {
-      for (let sx = 0; sx < searchWidth - tSize; sx += 2) {
-        let diff = 0
-        for (let ty = 0; ty < tSize; ty += 4) {
-          for (let tx = 0; tx < tSize; tx += 4) {
-            const sIdx = ((sy + ty) * searchWidth + (sx + tx)) * 4
-            const tIdx = (ty * tSize + tx) * 4
-            diff += Math.abs(searchData[sIdx] - templateData[tIdx]) +
-                    Math.abs(searchData[sIdx + 1] - templateData[tIdx + 1]) +
-                    Math.abs(searchData[sIdx + 2] - templateData[tIdx + 2])
+            const tr = templateData[tIndex]
+            const tg = templateData[tIndex + 1]
+            const tb = templateData[tIndex + 2]
+
+            difference += Math.abs(luminance(sr, sg, sb) - luminance(tr, tg, tb))
+            count++
           }
         }
-        if (diff < minDiff) {
-          minDiff = diff
-          bestX = startX + sx + tSize / 2
-          bestY = startY + sy + tSize / 2
+
+        const normalized = difference / count
+        if (normalized < bestScore) {
+          bestScore = normalized
+          bestX = startX - templateSize / 2 + sx + templateSize / 2
+          bestY = startY - templateSize / 2 + sy + templateSize / 2
         }
       }
     }
 
-    const rawTargetX = bestX * scaleX
-    const rawTargetY = bestY * scaleY
-
-    const alpha = 0.35
-    platePosRef.current.x += alpha * (rawTargetX - platePosRef.current.x)
-    platePosRef.current.y += alpha * (rawTargetY - platePosRef.current.y)
-
-    return {
-      x: platePosRef.current.x,
-      y: platePosRef.current.y,
-      confidence: minDiff < 16000 ? 95 : 10
+    const confidence = Math.max(0, Math.min(100, 100 - bestScore * 1.5))
+    if (confidence < 25) {
+      return { ...previous, confidence }
     }
+
+    const alpha = confidence > 70 ? 0.55 : 0.3
+    const x = previous.x + alpha * (bestX - previous.x)
+    const y = previous.y + alpha * (bestY - previous.y)
+
+    const detection = { x, y, radius: previous.radius, confidence }
+    detectionRef.current = detection
+    return detection
   }
 
-  // 60 FPS Optical Loop
-  const runTracker = () => {
-    const track = () => {
-      if (!isTrackingRef.current || !videoRef.current || !canvasRef.current) return
+  const calculateVelocity = (previousY, currentY, previousTime, currentTime) => {
+    const dt = (currentTime - previousTime) / 1000
+    if (dt <= 0 || dt > MAX_FRAME_INTERVAL) return null
 
-      const video = videoRef.current
-      const canvas = canvasRef.current
-      const ctx = canvas.getContext('2d')
-      const now = performance.now()
+    const displacementPixels = previousY - currentY
+    const displacementMeters = displacementPixels * metersPerPixel
+    return displacementMeters / dt
+  }
 
-      if (video.readyState >= 2) {
-        const detected = detectPlate(video, canvas.width, canvas.height)
-        const isLocked = detected && detected.confidence > 50
+  const smoothVelocity = (velocity) => {
+    velocitySamplesRef.current.push(velocity)
+    if (velocitySamplesRef.current.length > 5) {
+      velocitySamplesRef.current.shift()
+    }
+    const values = velocitySamplesRef.current
+    return values.reduce((sum, value) => sum + value, 0) / values.length
+  }
 
-        setPlateColor(isLocked ? 'green' : 'red')
-        setIsPlateDetected(isLocked)
+  const processRepVelocity = (velocity, now) => {
+    const absoluteVelocity = Math.abs(velocity)
 
-        if (isLocked && platePosRef.current) {
-          const plate = platePosRef.current
-          const config = EXERCISE_CONFIGS[exercise] || EXERCISE_CONFIGS['Back Squat']
+    if (velocity > MIN_CONCENTRIC_VELOCITY) {
+      if (repStateRef.current !== 'concentric') {
+        repStateRef.current = 'concentric'
+        concentricStartTimeRef.current = now
+        if (repStartTimeRef.current === null) {
+          repStartTimeRef.current = now
+        }
+        velocitySamplesRef.current = []
+      }
 
-          if (stepRef.current === 'recording') {
-            pathPointsRef.current.push({ x: plate.x, y: plate.y })
-            if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
+      velocitySamplesRef.current.push(velocity)
+      const peak = Math.max(...velocitySamplesRef.current)
 
-            if (lastYRef.current !== null && lastTimeRef.current !== null) {
-              const deltaY = lastYRef.current - plate.y
-              const deltaTime = (now - lastTimeRef.current) / 1000
-              const metersPerPixel = 0.0028 // Olympic Bumper Plate Calibrated Ratio
+      setCurrentVelocity(smoothVelocity(velocity))
+      setPeakVelocity((prevPeak) => Math.max(prevPeak, peak))
+      return
+    }
 
-              if (deltaTime > 0 && deltaTime < 0.2) {
-                const vel = (deltaY * metersPerPixel) / deltaTime
+    if (velocity < -MIN_CONCENTRIC_VELOCITY) {
+      if (repStateRef.current === 'concentric') {
+        const concentricStart = concentricStartTimeRef.current
+        const repStart = repStartTimeRef.current
 
-                if (Math.abs(vel) > 0.01) {
-                  setCurrentVelocity(Math.abs(vel))
-                }
+        if (
+          concentricStart !== null &&
+          repStart !== null &&
+          velocitySamplesRef.current.length > 0
+        ) {
+          const values = velocitySamplesRef.current
+          const mean = values.reduce((a, b) => a + b, 0) / values.length
+          const peak = Math.max(...values)
+          const concentricTime = (now - concentricStart) / 1000
+          const totalTime = (now - repStart) / 1000
+          const eccentricTime = Math.max(0, totalTime - concentricTime)
 
-                // Concentric Phase (> 0.04 m/s upward displacement)
-                if (vel > 0.04) {
-                  if (!isConcentricRef.current) isConcentricRef.current = true
-                  concentricVelocitiesRef.current.push(vel)
-                  if (vel > peakVelInRepRef.current) peakVelInRepRef.current = vel
-                } else if (vel < -0.04 && isConcentricRef.current) {
-                  isConcentricRef.current = false
+          const points = samplesRef.current
+          let rom = 0
+          if (points.length > 1) {
+            const ys = points.map((point) => point.y)
+            rom = (Math.max(...ys) - Math.min(...ys)) * metersPerPixel
+          }
 
-                  // Mode-Specific VBT Score
-                  let finalRepVel = 0
-                  if (config.metricMode === 'PEAK') {
-                    finalRepVel = parseFloat(peakVelInRepRef.current.toFixed(2))
-                  } else {
-                    const vels = concentricVelocitiesRef.current
-                    const meanVel = vels.length > 0 ? vels.reduce((a, b) => a + b, 0) / vels.length : currentVelocity
-                    finalRepVel = parseFloat(meanVel.toFixed(2))
-                  }
+          const newRep = {
+            rep: repData.length + 1,
+            meanVelocity: Number(mean.toFixed(2)),
+            peakVelocity: Number(peak.toFixed(2)),
+            rom: Number(rom.toFixed(2)),
+            concentricTime: Number(concentricTime.toFixed(2)),
+            eccentricTime: Number(eccentricTime.toFixed(2)),
+            totalTime: Number(totalTime.toFixed(2)),
+          }
 
-                  const zone = getVbtZone(finalRepVel, config.metricMode)
+          setRepData((prev) => {
+            const updated = [...prev, newRep]
+            setRepCount(updated.length)
 
-                  setRepData((prev) => {
-                    const firstRepVel = prev.length > 0 ? prev[0].vel : finalRepVel
-                    const velLoss = firstRepVel > 0 ? ((firstRepVel - finalRepVel) / firstRepVel) * 100 : 0
-
-                    if (velLoss >= maxVelLossPercent) {
-                      setFatigueWarning(true)
-                    }
-
-                    const updated = [
-                      ...prev,
-                      { rep: prev.length + 1, vel: finalRepVel, zone, velLoss: Math.round(velLoss) }
-                    ]
-                    setRepCount(updated.length)
-
-                    if (updated.length >= targetReps) {
-                      setTimeout(() => finishRecording(), 100)
-                    }
-                    return updated
-                  })
-
-                  speakVelocity(finalRepVel)
-                  concentricVelocitiesRef.current = []
-                  peakVelInRepRef.current = 0
-                }
-              }
+            if (updated.length >= targetReps && !finishingRef.current) {
+              finishingRef.current = true
+              setTimeout(() => {
+                finishRecording()
+              }, 300)
             }
+            return updated
+          })
 
-            lastYRef.current = plate.y
-            lastTimeRef.current = now
-          }
-
-          ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-          if (stepRef.current === 'recording' && pathPointsRef.current.length > 1) {
-            ctx.strokeStyle = '#00FF66'
-            ctx.lineWidth = 5
-            ctx.lineCap = 'round'
-            ctx.setLineDash([8, 8])
-
-            ctx.beginPath()
-            ctx.moveTo(pathPointsRef.current[0].x, pathPointsRef.current[0].y)
-            for (let i = 1; i < pathPointsRef.current.length; i++) {
-              ctx.lineTo(pathPointsRef.current[i].x, pathPointsRef.current[i].y)
-            }
-            ctx.stroke()
-            ctx.setLineDash([])
-          }
-
-          const targetColor = isLocked ? '#00FF66' : '#EF4444'
-
-          ctx.strokeStyle = targetColor
-          ctx.lineWidth = 4
-          ctx.beginPath()
-          ctx.arc(plate.x, plate.y, plate.radius || 28, 0, Math.PI * 2)
-          ctx.stroke()
-
-          ctx.fillStyle = targetColor
-          ctx.beginPath()
-          ctx.arc(plate.x, plate.y, 6, 0, Math.PI * 2)
-          ctx.fill()
+          speakVelocity(mean)
+          velocitySamplesRef.current = []
+          repStateRef.current = 'eccentric'
+          repStartTimeRef.current = now
+          concentricStartTimeRef.current = null
+          return
         }
       }
 
-      if (isTrackingRef.current) {
-        rafRef.current = requestAnimationFrame(track)
+      repStateRef.current = 'eccentric'
+      if (repStartTimeRef.current === null) {
+        repStartTimeRef.current = now
+      }
+      return
+    }
+
+    if (absoluteVelocity < MIN_MOVEMENT_VELOCITY) {
+      return
+    }
+  }
+
+  const drawOverlay = (detection) => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+    if (stepRef.current === 'recording' && pathRef.current.length > 1) {
+      ctx.beginPath()
+      const first = pathRef.current[0]
+      ctx.moveTo(first.x, first.y)
+
+      for (let i = 1; i < pathRef.current.length; i++) {
+        const point = pathRef.current[i]
+        ctx.lineTo(point.x, point.y)
+      }
+
+      ctx.strokeStyle = '#00FF66'
+      ctx.lineWidth = 4
+      ctx.setLineDash([8, 8])
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+
+    if (!detection) return
+
+    const locked = detection.confidence >= 50
+    const color = locked ? '#00FF66' : '#EF4444'
+
+    ctx.beginPath()
+    ctx.arc(detection.x, detection.y, detection.radius, 0, Math.PI * 2)
+    ctx.strokeStyle = color
+    ctx.lineWidth = 4
+    ctx.stroke()
+
+    ctx.beginPath()
+    ctx.arc(detection.x, detection.y, 6, 0, Math.PI * 2)
+    ctx.fillStyle = color
+    ctx.fill()
+
+    ctx.font = 'bold 14px system-ui'
+    ctx.fillStyle = color
+    ctx.fillText(`${Math.round(detection.confidence)}%`, detection.x + 35, detection.y - 35)
+  }
+
+  const trackingLoop = useCallback(() => {
+    if (!trackingRef.current || !videoRef.current || !canvasRef.current) return
+
+    const video = videoRef.current
+    const now = performance.now()
+
+    fpsFrameCountRef.current++
+    const fpsElapsed = now - fpsTimeRef.current
+
+    if (fpsElapsed >= 1000) {
+      const calculatedFps = Math.round((fpsFrameCountRef.current * 1000) / fpsElapsed)
+      setFps(calculatedFps)
+      fpsFrameCountRef.current = 0
+      fpsTimeRef.current = now
+    }
+
+    if (video.readyState >= 2) {
+      let detection = detectionRef.current
+
+      if (templateRef.current) {
+        detection = trackTemplate(video)
+      }
+
+      if (detection) {
+        const canvas = canvasRef.current
+        const scaleX = canvas.width / PROCESS_WIDTH
+        const scaleY = canvas.height / PROCESS_HEIGHT
+
+        detection = {
+          ...detection,
+          x: detection.x * scaleX,
+          y: detection.y * scaleY,
+          radius: detection.radius * ((scaleX + scaleY) / 2),
+        }
+
+        setTrackingConfidence(Math.round(detection.confidence))
+        setPlateDetected(detection.confidence >= 50)
+
+        if (stepRef.current === 'align') {
+          const framing = detection.x > canvas.width * 0.1 && detection.x < canvas.width * 0.9
+          const fpsReady = fps >= 45
+          const lighting = detection.confidence >= 65
+          const calibration = metersPerPixel > 0
+
+          const nextChecks = {
+            tracking: detection.confidence >= 50,
+            framing,
+            fps: fpsReady,
+            lighting,
+            calibration,
+          }
+
+          setChecks(nextChecks)
+
+          let score = 0
+          if (nextChecks.tracking) score += 25
+          if (nextChecks.framing) score += 20
+          if (nextChecks.fps) score += 20
+          if (nextChecks.lighting) score += 20
+          if (nextChecks.calibration) score += 15
+
+          setReadinessScore(score)
+        }
+
+        if (stepRef.current === 'recording') {
+          const point = { x: detection.x, y: detection.y, t: now }
+          pathRef.current.push(point)
+
+          if (pathRef.current.length > 200) {
+            pathRef.current.shift()
+          }
+
+          const previousY = lastPositionRef.current
+          const previousTime = lastTimeRef.current
+
+          if (previousY !== null && previousTime !== null) {
+            const velocity = calculateVelocity(previousY, detection.y, previousTime, now)
+            if (velocity !== null) {
+              processRepVelocity(velocity, now)
+            }
+          }
+
+          lastPositionRef.current = detection.y
+          lastTimeRef.current = now
+
+          samplesRef.current.push({
+            x: detection.x,
+            y: detection.y,
+            t: now,
+            confidence: detection.confidence,
+          })
+
+          if (samplesRef.current.length > 1000) {
+            samplesRef.current.shift()
+          }
+        }
+
+        drawOverlay(detection)
       }
     }
 
-    track()
-  }
+    if (trackingRef.current) {
+      animationRef.current = requestAnimationFrame(trackingLoop)
+    }
+  }, [fps, metersPerPixel, peakVelocity, repData.length, speakVelocity, targetReps])
 
   const startCamera = async () => {
     setCameraError('')
+    resetTrackingState()
     setStep('align')
 
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera API unavailable')
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'environment', frameRate: { ideal: 60 } },
-        audio: false
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 60, min: 30 },
+        },
+        audio: false,
       })
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current.play()
-          if (canvasRef.current && videoRef.current) {
-            canvasRef.current.width = videoRef.current.videoWidth || 1280
-            canvasRef.current.height = videoRef.current.videoHeight || 720
-          }
-          isTrackingRef.current = true
-          runTracker()
-        }
+      streamRef.current = stream
+      const video = videoRef.current
+      if (!video) return
+
+      video.srcObject = stream
+      await video.play()
+
+      const canvas = canvasRef.current
+      if (canvas) {
+        canvas.width = video.videoWidth || 1280
+        canvas.height = video.videoHeight || 720
       }
-    } catch (err) {
-      setCameraError('Camera access denied')
+
+      trackingRef.current = true
+      fpsTimeRef.current = performance.now()
+      fpsFrameCountRef.current = 0
+
+      trackingLoop()
+    } catch (error) {
+      console.error(error)
+      setCameraError('Unable to access camera. Please check permissions.')
+      setStep('setup')
     }
   }
 
   const stopCamera = () => {
-    isTrackingRef.current = false
-    if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    if (videoRef.current?.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach((t) => t.stop())
+    trackingRef.current = false
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current)
+      animationRef.current = null
+    }
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+    }
+
+    if (videoRef.current) {
       videoRef.current.srcObject = null
     }
   }
 
-  const handleReady = () => setStep('ready')
+  const handleTapToLock = (event) => {
+    if (!canvasRef.current || !videoRef.current) return
+
+    const canvas = canvasRef.current
+    const rect = canvas.getBoundingClientRect()
+
+    const canvasX = ((event.clientX - rect.left) / rect.width) * canvas.width
+    const canvasY = ((event.clientY - rect.top) / rect.height) * canvas.height
+
+    const processX = (canvasX / canvas.width) * PROCESS_WIDTH
+    const processY = (canvasY / canvas.height) * PROCESS_HEIGHT
+
+    const success = createTemplate(videoRef.current, processX, processY)
+    if (success) {
+      setPlateDetected(true)
+      setTrackingConfidence(100)
+    }
+  }
+
+  const handleReady = () => {
+    if (readinessScore < 80) return
+    setStep('ready')
+  }
 
   const handleStartRecording = () => {
+    if (!detectionRef.current) return
+
     setRepData([])
     setRepCount(0)
-    setFatigueWarning(false)
-    pathPointsRef.current = []
-    concentricVelocitiesRef.current = []
-    peakVelInRepRef.current = 0
-    lastYRef.current = platePosRef.current?.y || null
-    lastTimeRef.current = performance.now()
+    setCurrentVelocity(0)
+    setPeakVelocity(0)
+
+    pathRef.current = []
+    samplesRef.current = []
+    velocitySamplesRef.current = []
+    repStateRef.current = 'idle'
+
+    const now = performance.now()
+    lastPositionRef.current = detectionRef.current.y
+    lastTimeRef.current = now
+    repStartTimeRef.current = now
+    concentricStartTimeRef.current = null
+    finishingRef.current = false
+
     setStep('recording')
   }
 
@@ -352,188 +606,457 @@ export default function Page() {
 
   const resetAll = () => {
     stopCamera()
-    setRepData([])
-    setRepCount(0)
-    setCurrentVelocity(0)
-    setFatigueWarning(false)
-    platePosRef.current = null
-    plateTemplateRef.current = null
+    resetTrackingState()
+    setReadinessScore(0)
+    setChecks({
+      tracking: false,
+      framing: false,
+      fps: false,
+      lighting: false,
+      calibration: false,
+    })
     setStep('setup')
   }
 
-  const handleTapToLock = (e) => {
-    if (!canvasRef.current || !procCanvasRef.current || !videoRef.current) return
-    const rect = canvasRef.current.getBoundingClientRect()
-    const scaleX = canvasRef.current.width / rect.width
-    const scaleY = canvasRef.current.height / rect.height
+  const summary = useMemo(() => {
+    if (repData.length === 0) {
+      return { mean: 0, peak: 0, rom: 0, velocityLoss: 0 }
+    }
 
-    const clickX = (e.clientX - rect.left) * scaleX
-    const clickY = (e.clientY - rect.top) * scaleY
+    const mean = repData.reduce((sum, rep) => sum + rep.meanVelocity, 0) / repData.length
+    const peak = Math.max(...repData.map((rep) => rep.peakVelocity))
+    const rom = repData.reduce((sum, rep) => sum + rep.rom, 0) / repData.length
 
-    const pCtx = procCanvasRef.current.getContext('2d')
-    const pW = procCanvasRef.current.width
-    const pH = procCanvasRef.current.height
-    pCtx.drawImage(videoRef.current, 0, 0, pW, pH)
+    const first = repData[0].meanVelocity
+    const last = repData[repData.length - 1].meanVelocity
+    const velocityLoss = first > 0 ? ((first - last) / first) * 100 : 0
 
-    const tSize = 20
-    const procX = Math.floor((clickX / canvasRef.current.width) * pW)
-    const procY = Math.floor((clickY / canvasRef.current.height) * pH)
-
-    plateTemplateRef.current = pCtx.getImageData(
-      Math.max(0, procX - tSize / 2),
-      Math.max(0, procY - tSize / 2),
-      tSize,
-      tSize
-    )
-    platePosRef.current = { x: clickX, y: clickY, radius: 28 }
-    setIsPlateDetected(true)
-  }
-
-  const activeConfig = EXERCISE_CONFIGS[exercise] || EXERCISE_CONFIGS['Back Squat']
-  const activeZone = getVbtZone(currentVelocity, activeConfig.metricMode)
+    return {
+      mean: Number(mean.toFixed(2)),
+      peak: Number(peak.toFixed(2)),
+      rom: Number(rom.toFixed(2)),
+      velocityLoss: Number(velocityLoss.toFixed(1)),
+    }
+  }, [repData])
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#0D0D0E', color: '#FFF', fontFamily: 'system-ui', paddingBottom: '80px' }}>
-      {/* Header */}
-      <div style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1C1C1F' }}>
+    <main
+      style={{
+        minHeight: '100vh',
+        background: '#0D0D0E',
+        color: '#FFFFFF',
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+        paddingBottom: 80,
+      }}
+    >
+      <header
+        style={{
+          padding: '16px 20px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          borderBottom: '1px solid #242428',
+        }}
+      >
         <div>
-          <h1 style={{ fontSize: '18px', fontWeight: '700', margin: 0 }}>{exercise}</h1>
-          <p style={{ fontSize: '12px', color: '#A1A1AA', margin: '2px 0 0 0' }}>{loadKg}kg × {targetReps} reps | Mode: {activeConfig.metricMode}</p>
+          <div style={{ fontSize: 18, fontWeight: 800 }}>VBT PERFORMANCE</div>
+          <div style={{ fontSize: 12, color: '#A1A1AA', marginTop: 3 }}>
+            {exercise} · {loadKg} kg × {targetReps} reps
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-          <button onClick={() => setAudioFeedback(!audioFeedback)} style={{ fontSize: '18px', border: 'none', background: 'none', cursor: 'pointer', opacity: audioFeedback ? 1 : 0.4 }}>🔊</button>
-          <span onClick={resetAll} style={{ fontSize: '20px', cursor: 'pointer' }}>←</span>
-        </div>
-      </div>
 
-      {/* STEP 1: SETUP */}
-      {step === 'setup' && (
-        <div style={{ padding: '24px', maxWidth: '500px', margin: '0 auto' }}>
-          <h2 style={{ fontSize: '20px', fontWeight: '800', marginBottom: '20px' }}>VBT Athletic Setup</h2>
-          
-          <div style={{ marginBottom: '20px' }}>
-            <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>SELECT EXERCISE</label>
-            <select
-              value={exercise}
-              onChange={(e) => {
-                const ex = e.target.value
-                setExercise(ex)
-                setLoadKg(EXERCISE_CONFIGS[ex].defaultLoad)
+        <div style={{ display: 'flex', gap: 15, alignItems: 'center' }}>
+          <button
+            onClick={() => setAudioFeedback(!audioFeedback)}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              color: '#FFF',
+              fontSize: 20,
+              cursor: 'pointer',
+              opacity: audioFeedback ? 1 : 0.35,
+            }}
+          >
+            🔊
+          </button>
+
+          {step !== 'setup' && (
+            <button
+              onClick={resetAll}
+              style={{
+                border: 'none',
+                background: 'transparent',
+                color: '#FFF',
+                fontSize: 22,
+                cursor: 'pointer',
               }}
-              style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF', fontSize: '14px' }}
             >
-              {Object.keys(EXERCISE_CONFIGS).map((ex) => (
-                <option key={ex} value={ex}>{ex} ({EXERCISE_CONFIGS[ex].metricMode} Velocity)</option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
-            <div>
-              <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>LOAD (KG)</label>
-              <input type="number" value={loadKg} onChange={(e) => setLoadKg(Number(e.target.value))} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }} />
-            </div>
-            <div>
-              <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>TARGET REPS</label>
-              <input type="number" value={targetReps} onChange={(e) => setTargetReps(Number(e.target.value))} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }} />
-            </div>
-          </div>
-
-          <div style={{ marginBottom: '24px' }}>
-            <label style={{ fontSize: '12px', color: '#A1A1AA', fontWeight: '700', display: 'block', marginBottom: '6px' }}>MAX VELOCITY LOSS CAP (%)</label>
-            <input type="number" value={maxVelLossPercent} onChange={(e) => setMaxVelLossPercent(Number(e.target.value))} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }} />
-            <span style={{ fontSize: '10px', color: '#71717A', marginTop: '4px', display: 'block' }}>Alerts when rep speed drops beyond this percentage.</span>
-          </div>
-
-          <button onClick={startCamera} style={{ width: '100%', padding: '14px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontSize: '16px', fontWeight: '800', cursor: 'pointer' }}>Start VBT Alignment →</button>
+              ←
+            </button>
+          )}
         </div>
+      </header>
+
+      {/* SETUP VIEW */}
+      {step === 'setup' && (
+        <section style={{ maxWidth: 520, margin: '0 auto', padding: 24 }}>
+          <h1 style={{ fontSize: 26, margin: '0 0 8px' }}>Start Set</h1>
+          <p style={{ color: '#A1A1AA', marginBottom: 28 }}>Camera-based barbell velocity tracking.</p>
+
+          <label style={labelStyle}>EXERCISE</label>
+          <select
+            value={exercise}
+            onChange={(e) => setExercise(e.target.value)}
+            style={inputStyle}
+          >
+            <option>Back Squat</option>
+            <option>Bench Press</option>
+            <option>Deadlift</option>
+            <option>Overhead Press</option>
+            <option>Barbell Row</option>
+          </select>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 20 }}>
+            <div>
+              <label style={labelStyle}>LOAD KG</label>
+              <input
+                type="number"
+                min="0"
+                value={loadKg}
+                onChange={(e) => setLoadKg(Number(e.target.value))}
+                style={inputStyle}
+              />
+            </div>
+
+            <div>
+              <label style={labelStyle}>TARGET REPS</label>
+              <input
+                type="number"
+                min="1"
+                value={targetReps}
+                onChange={(e) => setTargetReps(Number(e.target.value))}
+                style={inputStyle}
+              />
+            </div>
+          </div>
+
+          <button
+            onClick={startCamera}
+            style={{
+              width: '100%',
+              marginTop: 24,
+              padding: 15,
+              borderRadius: 10,
+              border: 'none',
+              background: '#EF4444',
+              color: '#FFF',
+              fontSize: 16,
+              fontWeight: 800,
+              cursor: 'pointer',
+            }}
+          >
+            Start Camera Alignment →
+          </button>
+
+          {cameraError && (
+            <div
+              style={{
+                marginTop: 15,
+                padding: 12,
+                borderRadius: 8,
+                background: '#32171A',
+                color: '#FCA5A5',
+                fontSize: 13,
+              }}
+            >
+              {cameraError}
+            </div>
+          )}
+        </section>
       )}
 
-      {/* STEP 2: CAMERA ALIGNMENT & RECORDING */}
+      {/* CAMERA VIEW (ALIGN / READY / RECORDING) */}
       {(step === 'align' || step === 'ready' || step === 'recording') && (
-        <div style={{ padding: '16px' }}>
-          <div style={{ position: 'relative', width: '100%', aspectRatio: '9/16', backgroundColor: '#18181B', borderRadius: '12px', overflow: 'hidden' }}>
-            <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            <canvas ref={canvasRef} onClick={handleTapToLock} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10, cursor: 'crosshair' }} />
+        <section style={{ padding: 16, maxWidth: 900, margin: '0 auto' }}>
+          <div
+            style={{
+              position: 'relative',
+              width: '100%',
+              aspectRatio: '16 / 9',
+              background: '#18181B',
+              borderRadius: 14,
+              overflow: 'hidden',
+            }}
+          >
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+            />
 
-            {/* Lock Badge */}
-            <div style={{ position: 'absolute', top: '12px', left: '12px', backgroundColor: plateColor === 'green' ? 'rgba(0, 255, 102, 0.2)' : 'rgba(239, 68, 68, 0.2)', border: `2px solid ${plateColor === 'green' ? '#00FF66' : '#EF4444'}`, color: plateColor === 'green' ? '#00FF66' : '#EF4444', fontSize: '12px', fontWeight: '800', padding: '6px 12px', borderRadius: '20px', zIndex: 20 }}>
-              {plateColor === 'green' ? '🟢 PLATE LOCKED' : '🔴 SCANNING PLATE...'}
-            </div>
+            <canvas
+              ref={canvasRef}
+              onClick={handleTapToLock}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                zIndex: 10,
+                cursor: 'crosshair',
+              }}
+            />
 
-            {/* Fatigue Threshold Warning Overlay */}
-            {fatigueWarning && (
-              <div style={{ position: 'absolute', top: '50px', left: '12px', right: '12px', backgroundColor: 'rgba(239, 68, 68, 0.95)', padding: '10px 14px', borderRadius: '8px', textAlign: 'center', fontWeight: '800', fontSize: '13px', zIndex: 35, boxShadow: '0 4px 15px rgba(239, 68, 68, 0.5)' }}>
-                ⚠️ FATIGUE CAP REACHED ({maxVelLossPercent}% SPEED DROP)
+            {/* DIAGNOSTICS OVERLAY */}
+            {step === 'align' && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  left: 12,
+                  right: 12,
+                  zIndex: 20,
+                  padding: '14px 16px',
+                  borderRadius: 12,
+                  background: 'rgba(15,15,17,.92)',
+                  border: '1px solid #303035',
+                  backdropFilter: 'blur(12px)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <strong style={{ fontSize: 12 }}>CAMERA DIAGNOSTIC</strong>
+                  <strong style={{ color: readinessScore >= 80 ? '#00FF66' : '#EF4444' }}>
+                    {readinessScore}%
+                  </strong>
+                </div>
+
+                <div
+                  style={{
+                    height: 6,
+                    background: '#27272A',
+                    borderRadius: 10,
+                    overflow: 'hidden',
+                    marginBottom: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${readinessScore}%`,
+                      height: '100%',
+                      background: readinessScore >= 80 ? '#00FF66' : '#EF4444',
+                      transition: 'width .3s',
+                    }}
+                  />
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: 7,
+                    fontSize: 11,
+                  }}
+                >
+                  <Diagnostic ok={checks.tracking} text="Object locked" />
+                  <Diagnostic ok={checks.framing} text="Framing" />
+                  <Diagnostic ok={checks.fps} text={`FPS ${fps}`} />
+                  <Diagnostic ok={checks.lighting} text="Tracking quality" />
+                  <Diagnostic ok={checks.calibration} text="Scale calibrated" />
+                </div>
               </div>
             )}
 
-            {/* Floating Metric Card Overlay */}
-            <div style={{ position: 'absolute', bottom: '16px', left: '16px', backgroundColor: 'rgba(18, 18, 20, 0.92)', borderRadius: '12px', padding: '12px 16px', border: '1px solid #27272A', zIndex: 20 }}>
-              <div style={{ fontSize: '32px', fontWeight: '900', color: '#00FF66' }}>{currentVelocity.toFixed(2)}</div>
-              <div style={{ fontSize: '11px', color: '#A1A1AA', marginTop: '2px' }}>{activeConfig.metricMode} VELOCITY (m/s)</div>
-              
-              {/* VBT Athletic Zone Indicator */}
-              <div style={{ marginTop: '8px', padding: '3px 8px', borderRadius: '4px', backgroundColor: activeZone.color, color: '#FFF', fontSize: '10px', fontWeight: '800', display: 'inline-block' }}>
-                {activeZone.name.toUpperCase()}
+            {/* LIVE METRIC OVERLAY */}
+            <div
+              style={{
+                position: 'absolute',
+                bottom: 16,
+                left: 16,
+                zIndex: 20,
+                padding: '12px 16px',
+                borderRadius: 12,
+                background: 'rgba(15,15,17,.92)',
+                border: '1px solid #303035',
+              }}
+            >
+              <div style={{ fontSize: 38, lineHeight: 1, fontWeight: 900, color: '#00FF66' }}>
+                {currentVelocity.toFixed(2)}
               </div>
-
-              <div style={{ fontSize: '12px', color: '#E4E4E7', marginTop: '6px', fontWeight: '600' }}>{repCount}/{targetReps} REPS</div>
+              <div style={{ fontSize: 11, color: '#A1A1AA', marginTop: 5 }}>
+                MEAN VELOCITY · M/S
+              </div>
+              <div style={{ marginTop: 7, fontSize: 13, fontWeight: 700 }}>
+                REP {repCount}/{targetReps}
+              </div>
             </div>
 
-            {/* Guided Flow Buttons */}
-            {step === 'align' && plateColor === 'green' && (
-              <button onClick={handleReady} style={{ position: 'absolute', bottom: '16px', right: '16px', padding: '12px 24px', borderRadius: '8px', border: 'none', backgroundColor: '#00FF66', color: '#000', fontWeight: '800', fontSize: '14px', cursor: 'pointer', zIndex: 30 }}>READY ✓</button>
+            {/* RECORDING BADGE */}
+            {step === 'recording' && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 16,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  zIndex: 20,
+                  padding: '8px 14px',
+                  borderRadius: 20,
+                  background: 'rgba(239,68,68,.9)',
+                  fontSize: 11,
+                  fontWeight: 900,
+                }}
+              >
+                ● RECORDING
+              </div>
+            )}
+
+            {/* CONTROL BUTTONS */}
+            {step === 'align' && (
+              <button
+                disabled={readinessScore < 80}
+                onClick={handleReady}
+                style={{
+                  position: 'absolute',
+                  right: 16,
+                  bottom: 16,
+                  zIndex: 30,
+                  padding: '13px 20px',
+                  borderRadius: 9,
+                  border: 'none',
+                  background: readinessScore >= 80 ? '#00FF66' : '#3F3F46',
+                  color: readinessScore >= 80 ? '#000' : '#A1A1AA',
+                  fontWeight: 900,
+                  cursor: readinessScore >= 80 ? 'pointer' : 'not-allowed',
+                }}
+              >
+                {readinessScore >= 80 ? 'Ready →' : 'Improve Setup'}
+              </button>
             )}
 
             {step === 'ready' && (
-              <button onClick={handleStartRecording} style={{ position: 'absolute', bottom: '16px', right: '16px', padding: '12px 24px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontWeight: '800', fontSize: '14px', cursor: 'pointer', zIndex: 30 }}>⏺ START RECORDING</button>
-            )}
-
-            {step === 'recording' && (
-              <div style={{ position: 'absolute', top: '12px', right: '12px', backgroundColor: '#EF4444', color: '#FFF', fontSize: '12px', fontWeight: '900', padding: '6px 12px', borderRadius: '8px', zIndex: 30 }}>🔴 REC</div>
+              <button
+                onClick={handleStartRecording}
+                style={{
+                  position: 'absolute',
+                  bottom: 16,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  zIndex: 30,
+                  padding: '14px 32px',
+                  borderRadius: 10,
+                  border: 'none',
+                  background: '#00FF66',
+                  color: '#000',
+                  fontWeight: 900,
+                  fontSize: 15,
+                  cursor: 'pointer',
+                }}
+              >
+                START SET
+              </button>
             )}
           </div>
-        </div>
+        </section>
       )}
 
-      {/* STEP 3: SUMMARY DASHBOARD */}
-      {step === 'summary' && repData.length > 0 && (
-        <div style={{ padding: '20px 16px' }}>
-          <div style={{ fontSize: '18px', fontWeight: '800', color: '#EF4444', marginBottom: '16px' }}>✓ Set Complete ({exercise})</div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
-            <div style={{ backgroundColor: '#18181C', padding: '12px', borderRadius: '8px', border: '1px solid #27272A' }}>
-              <div style={{ fontSize: '12px', color: '#A1A1AA', marginBottom: '4px' }}>Best ({activeConfig.metricMode})</div>
-              <div style={{ fontSize: '24px', fontWeight: '800', color: '#FFF' }}>{Math.max(...repData.map((r) => r.vel)).toFixed(2)} m/s</div>
+      {/* SUMMARY VIEW */}
+      {step === 'summary' && (
+        <section style={{ maxWidth: 700, margin: '0 auto', padding: 24 }}>
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ color: '#00FF66', fontSize: 12, fontWeight: 900, letterSpacing: 1 }}>
+              SET COMPLETE
             </div>
-            <div style={{ backgroundColor: '#18181C', padding: '12px', borderRadius: '8px', border: '1px solid #27272A' }}>
-              <div style={{ fontSize: '12px', color: '#A1A1AA', marginBottom: '4px' }}>Average</div>
-              <div style={{ fontSize: '24px', fontWeight: '800', color: '#FFF' }}>{(repData.reduce((a, b) => a + b.vel, 0) / repData.length).toFixed(2)} m/s</div>
+            <h1 style={{ fontSize: 30, margin: '6px 0' }}>{exercise}</h1>
+            <div style={{ color: '#A1A1AA' }}>
+              {loadKg} kg · {repData.length} reps
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '8px', height: '120px', alignItems: 'flex-end', paddingBottom: '12px', marginBottom: '20px', borderBottom: '1px solid #27272A' }}>
-            {repData.map((r, i) => (
-              <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <div style={{ width: '100%', height: `${(r.vel / 1.8) * 100}%`, backgroundColor: r.zone.color, borderRadius: '4px 4px 0 0' }} />
-                <div style={{ fontSize: '10px', color: '#A1A1AA', marginTop: '8px' }}>R{r.rep}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <MetricCard label="MEAN VELOCITY" value={`${summary.mean} m/s`} />
+            <MetricCard label="PEAK VELOCITY" value={`${summary.peak} m/s`} />
+            <MetricCard label="AVG ROM" value={`${summary.rom} m`} />
+            <MetricCard label="VELOCITY LOSS" value={`${summary.velocityLoss}%`} />
+          </div>
+
+          <h2 style={{ marginTop: 32, fontSize: 18 }}>Rep Breakdown</h2>
+
+          <div style={{ border: '1px solid #27272A', borderRadius: 12, overflow: 'hidden' }}>
+            {repData.map((rep) => (
+              <div
+                key={rep.rep}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '50px 1fr 1fr 1fr',
+                  padding: '14px 16px',
+                  borderBottom: '1px solid #27272A',
+                  fontSize: 13,
+                }}
+              >
+                <strong>{rep.rep}</strong>
+                <span>{rep.meanVelocity.toFixed(2)} m/s</span>
+                <span>Peak {rep.peakVelocity.toFixed(2)}</span>
+                <span>ROM {rep.rom.toFixed(2)}m</span>
               </div>
             ))}
           </div>
 
-          {repData.map((r) => (
-            <div key={r.rep} style={{ display: 'grid', gridTemplateColumns: '50px 1fr 110px 60px', padding: '12px 0', borderTop: '1px solid #1C1C1F', alignItems: 'center' }}>
-              <div style={{ color: '#A1A1AA', fontSize: '12px' }}>Rep {r.rep}</div>
-              <div style={{ fontSize: '14px', fontWeight: '700', color: '#FFF' }}>{r.vel} m/s</div>
-              <div style={{ fontSize: '10px', fontWeight: '800', color: r.zone.color }}>{r.zone.name}</div>
-              <div style={{ fontSize: '11px', color: r.velLoss >= maxVelLossPercent ? '#EF4444' : '#A1A1AA', textAlign: 'right' }}>-{r.velLoss}%</div>
-            </div>
-          ))}
-
-          <button onClick={resetAll} style={{ width: '100%', marginTop: '20px', padding: '14px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontSize: '15px', fontWeight: '800', cursor: 'pointer' }}>Next Set →</button>
-        </div>
+          <button
+            onClick={resetAll}
+            style={{
+              width: '100%',
+              marginTop: 24,
+              padding: 15,
+              borderRadius: 10,
+              border: '1px solid #3F3F46',
+              background: '#18181B',
+              color: '#FFF',
+              fontWeight: 800,
+              cursor: 'pointer',
+            }}
+          >
+            New Workout
+          </button>
+        </section>
       )}
+    </main>
+  )
+}
+
+function Diagnostic({ ok, text }) {
+  return (
+    <div style={{ color: ok ? '#00FF66' : '#A1A1AA' }}>
+      {ok ? '✓' : '○'} {text}
     </div>
   )
+}
+
+function MetricCard({ label, value }) {
+  return (
+    <div style={{ padding: 18, borderRadius: 12, background: '#18181B', border: '1px solid #27272A' }}>
+      <div style={{ fontSize: 10, color: '#A1A1AA', fontWeight: 800 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 900, marginTop: 7 }}>{value}</div>
+    </div>
+  )
+}
+
+const labelStyle = {
+  display: 'block',
+  fontSize: 11,
+  fontWeight: 800,
+  color: '#A1A1AA',
+  marginBottom: 6,
+}
+
+const inputStyle = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: 13,
+  borderRadius: 9,
+  border: '1px solid #303035',
+  background: '#18181B',
+  color: '#FFF',
+  fontSize: 15,
 }
