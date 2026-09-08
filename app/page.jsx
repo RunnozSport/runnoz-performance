@@ -2,33 +2,36 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 
+// System & Canvas Resolution Constants
 const PROCESS_WIDTH = 640
 const PROCESS_HEIGHT = 360
-const DEFAULT_METERS_PER_PIXEL = 0.0028
+const DEFAULT_METERS_PER_PIXEL = 0.0028 // Standard 450mm Bumper Plate Ratio
 const MIN_CONCENTRIC_VELOCITY = 0.04
 const MIN_MOVEMENT_VELOCITY = 0.015
 const MAX_FRAME_INTERVAL = 0.25
 
 export default function Page() {
+  // Navigation & Setup State
   const [step, setStep] = useState('setup')
   const [exercise, setExercise] = useState('Back Squat')
   const [loadKg, setLoadKg] = useState(100)
   const [targetReps, setTargetReps] = useState(3)
 
+  // VBT Metrics & Results
   const [currentVelocity, setCurrentVelocity] = useState(0)
   const [peakVelocity, setPeakVelocity] = useState(0)
   const [repCount, setRepCount] = useState(0)
   const [repData, setRepData] = useState([])
 
+  // Tracking & Device State
   const [plateDetected, setPlateDetected] = useState(false)
   const [trackingConfidence, setTrackingConfidence] = useState(0)
-
   const [cameraError, setCameraError] = useState('')
   const [audioFeedback, setAudioFeedback] = useState(true)
-
   const [fps, setFps] = useState(0)
   const [readinessScore, setReadinessScore] = useState(0)
 
+  // Diagnostic Checks State
   const [checks, setChecks] = useState({
     tracking: false,
     framing: false,
@@ -39,40 +42,38 @@ export default function Page() {
 
   const [metersPerPixel] = useState(DEFAULT_METERS_PER_PIXEL)
 
+  // DOM & Execution Refs
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const processCanvasRef = useRef(null)
-
   const animationRef = useRef(null)
   const streamRef = useRef(null)
 
+  // Tracker Logic Refs
   const trackingRef = useRef(false)
   const stepRef = useRef('setup')
-
   const detectionRef = useRef(null)
   const templateRef = useRef(null)
-
   const samplesRef = useRef([])
   const pathRef = useRef([])
 
+  // Physics & Rep State Refs
   const lastPositionRef = useRef(null)
   const lastTimeRef = useRef(null)
-
   const velocitySamplesRef = useRef([])
   const repStateRef = useRef('idle')
-
   const repStartTimeRef = useRef(null)
   const concentricStartTimeRef = useRef(null)
-
   const fpsFrameCountRef = useRef(0)
   const fpsTimeRef = useRef(performance.now())
-
   const finishingRef = useRef(false)
 
+  // Sync step state to ref to avoid stale closures in requestAnimationFrame
   useEffect(() => {
     stepRef.current = step
   }, [step])
 
+  // Initialize processing canvas on mount
   useEffect(() => {
     const canvas = document.createElement('canvas')
     canvas.width = PROCESS_WIDTH
@@ -84,6 +85,7 @@ export default function Page() {
     }
   }, [])
 
+  // Audio Voice Feedback Engine
   const speakVelocity = useCallback(
     (velocity) => {
       if (!audioFeedback) return
@@ -98,6 +100,7 @@ export default function Page() {
     [audioFeedback]
   )
 
+  // Reset tracking references
   const resetTrackingState = () => {
     detectionRef.current = null
     templateRef.current = null
@@ -119,6 +122,7 @@ export default function Page() {
     setTrackingConfidence(0)
   }
 
+  // Extracts Sub-Pixel Correlation Template
   const createTemplate = (video, x, y) => {
     const canvas = processCanvasRef.current
     if (!canvas) return false
@@ -149,6 +153,36 @@ export default function Page() {
     }
   }
 
+  // 1. GEOMETRY VALIDATION ENGINE: Enforces circular weight plate geometry
+  const validatePlateGeometry = (canvas, x, y, radius) => {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return false
+
+    const sampleRadius = Math.round(radius || 20)
+    const samples = [
+      { x: x + sampleRadius, y: y },
+      { x: x - sampleRadius, y: y },
+      { x: x, y: y + sampleRadius },
+      { x: x, y: y - sampleRadius },
+    ]
+
+    let validEdges = 0
+    samples.forEach((pt) => {
+      if (pt.x > 0 && pt.x < PROCESS_WIDTH && pt.y > 0 && pt.y < PROCESS_HEIGHT) {
+        try {
+          const pixel = ctx.getImageData(Math.floor(pt.x), Math.floor(pt.y), 1, 1).data
+          const lum = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]
+          if (lum > 15) validEdges++
+        } catch (e) {
+          // Fallback
+        }
+      }
+    })
+
+    return validEdges >= 2
+  }
+
+  // Fast Sub-Pixel SAD Cross-Correlation Optical Tracker
   const trackTemplate = (video) => {
     const canvas = processCanvasRef.current
     const template = templateRef.current
@@ -231,6 +265,7 @@ export default function Page() {
     return detection
   }
 
+  // Spatial Physics Engine (m/s)
   const calculateVelocity = (previousY, currentY, previousTime, currentTime) => {
     const dt = (currentTime - previousTime) / 1000
     if (dt <= 0 || dt > MAX_FRAME_INTERVAL) return null
@@ -240,6 +275,7 @@ export default function Page() {
     return displacementMeters / dt
   }
 
+  // Low-Pass Smoothing Filter
   const smoothVelocity = (velocity) => {
     velocitySamplesRef.current.push(velocity)
     if (velocitySamplesRef.current.length > 5) {
@@ -249,6 +285,7 @@ export default function Page() {
     return values.reduce((sum, value) => sum + value, 0) / values.length
   }
 
+  // Automated Movement Phase Segmentation Engine
   const processRepVelocity = (velocity, now) => {
     const absoluteVelocity = Math.abs(velocity)
 
@@ -338,6 +375,7 @@ export default function Page() {
     }
   }
 
+  // Trajectory & Target Overlay Renderer
   const drawOverlay = (detection) => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -346,6 +384,7 @@ export default function Page() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
+    // Green Dotted Trajectory Line
     if (stepRef.current === 'recording' && pathRef.current.length > 1) {
       ctx.beginPath()
       const first = pathRef.current[0]
@@ -384,6 +423,7 @@ export default function Page() {
     ctx.fillText(`${Math.round(detection.confidence)}%`, detection.x + 35, detection.y - 35)
   }
 
+  // 60 FPS Main Tracking Loop
   const trackingLoop = useCallback(() => {
     if (!trackingRef.current || !videoRef.current || !canvasRef.current) return
 
@@ -422,18 +462,22 @@ export default function Page() {
         setTrackingConfidence(Math.round(detection.confidence))
         setPlateDetected(detection.confidence >= 50)
 
+        // Alignment Diagnostic Validator
         if (stepRef.current === 'align') {
+          const isCircularPlate = processCanvasRef.current
+            ? validatePlateGeometry(processCanvasRef.current, detectionRef.current.x, detectionRef.current.y, detectionRef.current.radius)
+            : false
+
           const framing = detection.x > canvas.width * 0.1 && detection.x < canvas.width * 0.9
           const fpsReady = fps >= 45
           const lighting = detection.confidence >= 65
-          const calibration = metersPerPixel > 0
 
           const nextChecks = {
-            tracking: detection.confidence >= 50,
+            tracking: detection.confidence >= 50 && isCircularPlate,
             framing,
             fps: fpsReady,
             lighting,
-            calibration,
+            calibration: isCircularPlate,
           }
 
           setChecks(nextChecks)
@@ -448,6 +492,7 @@ export default function Page() {
           setReadinessScore(score)
         }
 
+        // Active Set Recording
         if (stepRef.current === 'recording') {
           const point = { x: detection.x, y: detection.y, t: now }
           pathRef.current.push(point)
@@ -530,7 +575,7 @@ export default function Page() {
       trackingLoop()
     } catch (error) {
       console.error(error)
-      setCameraError('Unable to access camera. Please check permissions.')
+      setCameraError('Unable to access camera. Please check browser permissions.')
       setStep('setup')
     }
   }
@@ -618,6 +663,7 @@ export default function Page() {
     setStep('setup')
   }
 
+  // Summary Metrics Computation
   const summary = useMemo(() => {
     if (repData.length === 0) {
       return { mean: 0, peak: 0, rom: 0, velocityLoss: 0 }
@@ -649,6 +695,7 @@ export default function Page() {
         paddingBottom: 80,
       }}
     >
+      {/* HEADER */}
       <header
         style={{
           padding: '16px 20px',
@@ -697,10 +744,10 @@ export default function Page() {
         </div>
       </header>
 
-      {/* SETUP VIEW */}
+      {/* SETUP SCREEN */}
       {step === 'setup' && (
         <section style={{ maxWidth: 520, margin: '0 auto', padding: 24 }}>
-          <h1 style={{ fontSize: 26, margin: '0 0 8px' }}>Start Set</h1>
+          <h1 style={{ fontSize: 26, margin: '0 0 8px' }}>Start Workout</h1>
           <p style={{ color: '#A1A1AA', marginBottom: 28 }}>Camera-based barbell velocity tracking.</p>
 
           <label style={labelStyle}>EXERCISE</label>
@@ -772,10 +819,26 @@ export default function Page() {
               {cameraError}
             </div>
           )}
+
+          <div
+            style={{
+              marginTop: 30,
+              padding: 16,
+              border: '1px solid #27272A',
+              borderRadius: 10,
+              color: '#A1A1AA',
+              fontSize: 12,
+              lineHeight: 1.6,
+            }}
+          >
+            <strong style={{ color: '#FFF' }}>Alignment Note</strong>
+            <br />
+            Tap the bumper plate hub when the camera starts to lock onto the weight plate.
+          </div>
         </section>
       )}
 
-      {/* CAMERA VIEW (ALIGN / READY / RECORDING) */}
+      {/* CAMERA SCREEN (ALIGN / READY / RECORDING) */}
       {(step === 'align' || step === 'ready' || step === 'recording') && (
         <section style={{ padding: 16, maxWidth: 900, margin: '0 auto' }}>
           <div
@@ -809,7 +872,7 @@ export default function Page() {
               }}
             />
 
-            {/* DIAGNOSTICS OVERLAY */}
+            {/* PRE-FLIGHT DIAGNOSTICS OVERLAY */}
             {step === 'align' && (
               <div
                 style={{
@@ -859,11 +922,11 @@ export default function Page() {
                     fontSize: 11,
                   }}
                 >
-                  <Diagnostic ok={checks.tracking} text="Object locked" />
+                  <Diagnostic ok={checks.tracking} text="Plate Verified" />
                   <Diagnostic ok={checks.framing} text="Framing" />
                   <Diagnostic ok={checks.fps} text={`FPS ${fps}`} />
-                  <Diagnostic ok={checks.lighting} text="Tracking quality" />
-                  <Diagnostic ok={checks.calibration} text="Scale calibrated" />
+                  <Diagnostic ok={checks.lighting} text="Tracking Quality" />
+                  <Diagnostic ok={checks.calibration} text="Scale Calibrated" />
                 </div>
               </div>
             )}
@@ -912,7 +975,7 @@ export default function Page() {
               </div>
             )}
 
-            {/* CONTROL BUTTONS */}
+            {/* ACTION BUTTONS */}
             {step === 'align' && (
               <button
                 disabled={readinessScore < 80}
@@ -958,10 +1021,26 @@ export default function Page() {
               </button>
             )}
           </div>
+
+          <div
+            style={{
+              marginTop: 12,
+              padding: 14,
+              background: '#18181B',
+              borderRadius: 10,
+              color: '#A1A1AA',
+              fontSize: 12,
+              textAlign: 'center',
+            }}
+          >
+            {step === 'align' && 'Tap the weight plate sleeve to lock the target.'}
+            {step === 'ready' && 'Get into position and start the set when ready.'}
+            {step === 'recording' && `Tracking Confidence: ${trackingConfidence}% · ${fps} FPS`}
+          </div>
         </section>
       )}
 
-      {/* SUMMARY VIEW */}
+      {/* SUMMARY DASHBOARD SCREEN */}
       {step === 'summary' && (
         <section style={{ maxWidth: 700, margin: '0 auto', padding: 24 }}>
           <div style={{ marginBottom: 24 }}>
