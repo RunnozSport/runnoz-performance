@@ -14,6 +14,15 @@ export default function Page() {
   const [cameraError, setCameraError] = useState('')
   const [audioFeedback, setAudioFeedback] = useState(true)
 
+  // --- PRE-FLIGHT CHECKLIST STATE ---
+  const [readinessScore, setReadinessScore] = useState(0)
+  const [checks, setChecklist] = useState({
+    plateLocked: false,
+    framingDistance: false,
+    fpsReady: false,
+    lightingReady: false
+  })
+
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const procCanvasRef = useRef(null)
@@ -21,14 +30,17 @@ export default function Page() {
   const isTrackingRef = useRef(false)
   const stepRef = useRef('setup')
 
-  // Metric Optical Tracking Refs
-  const platePosRef = useRef(null)       // Smooth {x, y, radius}
-  const plateTemplateRef = useRef(null)  // Locked RGB template matrix
+  const platePosRef = useRef(null)
+  const plateTemplateRef = useRef(null)
   const lastYRef = useRef(null)
   const lastTimeRef = useRef(null)
-  const pathPointsRef = useRef([])      // Dotted trajectory path array
+  const pathPointsRef = useRef([])
 
-  // Rep & Phase Tracking Refs
+  // FPS & Quality Measurement Refs
+  const frameCountRef = useRef(0)
+  const lastFpsTimeRef = useRef(performance.now())
+  const currentFpsRef = useRef(0)
+
   const isConcentricRef = useRef(false)
   const concentricVelocitiesRef = useRef([])
 
@@ -50,7 +62,6 @@ export default function Page() {
     }
   }, [])
 
-  // Real-Time Voice Audio Feedback
   const speakVelocity = (vel) => {
     if (!audioFeedback || typeof window === 'undefined') return
     if ('speechSynthesis' in window) {
@@ -61,7 +72,7 @@ export default function Page() {
     }
   }
 
-  // 1. Metric Optical Tracking Engine (Template Cross-Correlation)
+  // Optical Tracking & Quality Diagnostic Engine
   const detectPlate = (video, displayWidth, displayHeight) => {
     const procCanvas = procCanvasRef.current
     if (!procCanvas) return null
@@ -76,20 +87,18 @@ export default function Page() {
     const scaleY = displayHeight / pH
     const tSize = 20
 
-    // Capture initial template centered on plate hub if not present
     if (!platePosRef.current || !plateTemplateRef.current) {
       const initX = Math.floor(pW / 2)
       const initY = Math.floor(pH / 2)
       plateTemplateRef.current = pCtx.getImageData(initX - tSize / 2, initY - tSize / 2, tSize, tSize)
       platePosRef.current = { x: displayWidth / 2, y: displayHeight / 2, radius: 28 }
-      return { x: displayWidth / 2, y: displayHeight / 2, confidence: 100 }
+      return { x: displayWidth / 2, y: displayHeight / 2, confidence: 100, contrast: 80 }
     }
 
     const currentPos = platePosRef.current
     const anchorPX = Math.floor(currentPos.x / scaleX)
     const anchorPY = Math.floor(currentPos.y / scaleY)
 
-    // Clamped local search region (Prevents tracking drift)
     const searchRadius = 25
     const startX = Math.max(tSize / 2, anchorPX - searchRadius)
     const endX = Math.min(pW - tSize / 2, anchorPX + searchRadius)
@@ -109,7 +118,6 @@ export default function Page() {
     let bestX = anchorPX
     let bestY = anchorPY
 
-    // SAD Match Search
     for (let sy = 0; sy < searchHeight - tSize; sy += 2) {
       for (let sx = 0; sx < searchWidth - tSize; sx += 2) {
         let diff = 0
@@ -133,7 +141,6 @@ export default function Page() {
     const rawTargetX = bestX * scaleX
     const rawTargetY = bestY * scaleY
 
-    // Exponential Moving Average (EMA) Temporal Filter to eliminate jitter
     const alpha = 0.35
     platePosRef.current.x += alpha * (rawTargetX - platePosRef.current.x)
     platePosRef.current.y += alpha * (rawTargetY - platePosRef.current.y)
@@ -141,11 +148,12 @@ export default function Page() {
     return {
       x: platePosRef.current.x,
       y: platePosRef.current.y,
-      confidence: minDiff < 16000 ? 90 : 10
+      confidence: minDiff < 16000 ? 95 : 10,
+      contrast: minDiff
     }
   }
 
-  // 2. High-Frequency Tracking & Metric VBT Math Pipeline
+  // 60 FPS Main Loop with Diagnostic Evaluation
   const runTracker = () => {
     const track = () => {
       if (!isTrackingRef.current || !videoRef.current || !canvasRef.current) return
@@ -155,6 +163,14 @@ export default function Page() {
       const ctx = canvas.getContext('2d')
       const now = performance.now()
 
+      // Calculate Real-Time FPS
+      frameCountRef.current += 1
+      if (now - lastFpsTimeRef.current >= 1000) {
+        currentFpsRef.current = frameCountRef.current
+        frameCountRef.current = 0
+        lastFpsTimeRef.current = now
+      }
+
       if (video.readyState >= 2) {
         const detected = detectPlate(video, canvas.width, canvas.height)
         const isLocked = detected && detected.confidence > 50
@@ -162,19 +178,43 @@ export default function Page() {
         setPlateColor(isLocked ? 'green' : 'red')
         setIsPlateDetected(isLocked)
 
+        // Evaluate Diagnostic Checklist in Alignment Step
+        if (stepRef.current === 'align') {
+          const isFpsOk = currentFpsRef.current >= 45
+          const isLightingOk = detected ? detected.confidence > 70 : false
+          const isFramingOk = platePosRef.current
+            ? platePosRef.current.x > canvas.width * 0.15 && platePosRef.current.x < canvas.width * 0.85
+            : false
+
+          const newChecks = {
+            plateLocked: isLocked,
+            framingDistance: isFramingOk,
+            fpsReady: isFpsOk,
+            lightingReady: isLightingOk
+          }
+
+          setChecklist(newChecks)
+
+          // Calculate Overall Readiness %
+          let passCount = 0
+          if (isLocked) passCount += 30
+          if (isFramingOk) passCount += 25
+          if (isFpsOk) passCount += 25
+          if (isLightingOk) passCount += 20
+
+          setReadinessScore(passCount)
+        }
+
         if (isLocked && platePosRef.current) {
           const plate = platePosRef.current
 
-          // Active Recording Phase
           if (stepRef.current === 'recording') {
             pathPointsRef.current.push({ x: plate.x, y: plate.y })
             if (pathPointsRef.current.length > 70) pathPointsRef.current.shift()
 
             if (lastYRef.current !== null && lastTimeRef.current !== null) {
-              const deltaY = lastYRef.current - plate.y // Upward movement = positive
+              const deltaY = lastYRef.current - plate.y
               const deltaTime = (now - lastTimeRef.current) / 1000
-
-              // Olympic Bumper Plate Calibrated Scale (45cm Outer Diameter = ~0.0028 m/px)
               const metersPerPixel = 0.0028
 
               if (deltaTime > 0 && deltaTime < 0.2) {
@@ -184,29 +224,18 @@ export default function Page() {
                   setCurrentVelocity(Math.abs(vel))
                 }
 
-                // Concentric Phase Detection (> 0.04 m/s threshold)
                 if (vel > 0.04) {
                   if (!isConcentricRef.current) isConcentricRef.current = true
                   concentricVelocitiesRef.current.push(vel)
-                } 
-                // Eccentric Transition (Rep Completion)
-                else if (vel < -0.04 && isConcentricRef.current) {
+                } else if (vel < -0.04 && isConcentricRef.current) {
                   isConcentricRef.current = false
-
                   const vels = concentricVelocitiesRef.current
-                  const meanVel = vels.length > 0 
-                    ? vels.reduce((a, b) => a + b, 0) / vels.length 
-                    : currentVelocity
-
+                  const meanVel = vels.length > 0 ? vels.reduce((a, b) => a + b, 0) / vels.length : currentVelocity
                   const finalRepVel = parseFloat(meanVel.toFixed(2))
 
                   setRepData((prev) => {
-                    const updated = [
-                      ...prev,
-                      { rep: prev.length + 1, vel: finalRepVel, eccn: 0.6, rom: 55 }
-                    ]
+                    const updated = [...prev, { rep: prev.length + 1, vel: finalRepVel, eccn: 0.6, rom: 55 }]
                     setRepCount(updated.length)
-
                     if (updated.length >= targetReps) {
                       setTimeout(() => finishRecording(), 100)
                     }
@@ -223,10 +252,8 @@ export default function Page() {
             lastTimeRef.current = now
           }
 
-          // 3. Metric Visual Overlays
           ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-          // A. Green Dotted Bar-Path Trajectory
           if (stepRef.current === 'recording' && pathPointsRef.current.length > 1) {
             ctx.strokeStyle = '#00FF66'
             ctx.lineWidth = 5
@@ -242,7 +269,6 @@ export default function Page() {
             ctx.setLineDash([])
           }
 
-          // B. Target Circle (GREEN when locked, RED when scanning)
           const targetColor = isLocked ? '#00FF66' : '#EF4444'
 
           ctx.strokeStyle = targetColor
@@ -329,7 +355,6 @@ export default function Page() {
     setStep('setup')
   }
 
-  // Tap Canvas to Re-align / Re-lock Target Hub
   const handleTapToLock = (e) => {
     if (!canvasRef.current || !procCanvasRef.current || !videoRef.current) return
     const rect = canvasRef.current.getBoundingClientRect()
@@ -394,21 +419,60 @@ export default function Page() {
               <input type="number" value={targetReps} onChange={(e) => setTargetReps(Number(e.target.value))} style={{ width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #27272A', backgroundColor: '#18181C', color: '#FFF' }} />
             </div>
           </div>
-          <button onClick={startCamera} style={{ width: '100%', padding: '14px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontSize: '16px', fontWeight: '800', cursor: 'pointer' }}>Start Camera →</button>
+          <button onClick={startCamera} style={{ width: '100%', padding: '14px', borderRadius: '8px', border: 'none', backgroundColor: '#EF4444', color: '#FFF', fontSize: '16px', fontWeight: '800', cursor: 'pointer' }}>Start Camera Alignment →</button>
         </div>
       )}
 
-      {/* STEP 2: CAMERA ALIGNMENT & TRACKING */}
+      {/* STEP 2: CAMERA ALIGNMENT & PRE-FLIGHT CHECKLIST */}
       {(step === 'align' || step === 'ready' || step === 'recording') && (
         <div style={{ padding: '16px' }}>
           <div style={{ position: 'relative', width: '100%', aspectRatio: '9/16', backgroundColor: '#18181B', borderRadius: '12px', overflow: 'hidden' }}>
             <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             <canvas ref={canvasRef} onClick={handleTapToLock} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 10, cursor: 'crosshair' }} />
 
-            {/* Lock Badge */}
-            <div style={{ position: 'absolute', top: '12px', left: '12px', backgroundColor: plateColor === 'green' ? 'rgba(0, 255, 102, 0.2)' : 'rgba(239, 68, 68, 0.2)', border: `2px solid ${plateColor === 'green' ? '#00FF66' : '#EF4444'}`, color: plateColor === 'green' ? '#00FF66' : '#EF4444', fontSize: '13px', fontWeight: '800', padding: '8px 14px', borderRadius: '20px', zIndex: 20 }}>
-              {plateColor === 'green' ? '🟢 PLATE LOCKED' : '🔴 SCANNING PLATE...'}
-            </div>
+            {/* PRE-RECORDING ACCURACY DIAGNOSTIC OVERLAY (ALIGN STEP) */}
+            {step === 'align' && (
+              <div style={{
+                position: 'absolute',
+                top: '12px',
+                left: '12px',
+                right: '12px',
+                backgroundColor: 'rgba(18, 18, 20, 0.92)',
+                backdropFilter: 'blur(10px)',
+                borderRadius: '12px',
+                padding: '12px 16px',
+                border: '1px solid #27272A',
+                zIndex: 25
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: '800', color: '#E4E4E7' }}>ACCURACY DIAGNOSTIC</span>
+                  <span style={{ fontSize: '14px', fontWeight: '900', color: readinessScore >= 95 ? '#00FF66' : '#EF4444' }}>
+                    {readinessScore}% READY
+                  </span>
+                </div>
+
+                {/* Progress Bar */}
+                <div style={{ width: '100%', height: '6px', backgroundColor: '#27272A', borderRadius: '3px', overflow: 'hidden', marginBottom: '10px' }}>
+                  <div style={{ width: `${readinessScore}%`, height: '100%', backgroundColor: readinessScore >= 95 ? '#00FF66' : '#EF4444', transition: 'width 0.3s' }} />
+                </div>
+
+                {/* Diagnostic Criteria List */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '10px', color: '#A1A1AA' }}>
+                  <div style={{ color: checks.plateLocked ? '#00FF66' : '#A1A1AA' }}>
+                    {checks.plateLocked ? '✓' : '✗'} Weight Plate Locked
+                  </div>
+                  <div style={{ color: checks.framingDistance ? '#00FF66' : '#A1A1AA' }}>
+                    {checks.framingDistance ? '✓' : '✗'} Distance ($1.5\text{--}2.5\text{m}$)
+                  </div>
+                  <div style={{ color: checks.fpsReady ? '#00FF66' : '#A1A1AA' }}>
+                    {checks.fpsReady ? '✓' : '✗'} Camera FPS ($\ge 50$)
+                  </div>
+                  <div style={{ color: checks.lightingReady ? '#00FF66' : '#A1A1AA' }}>
+                    {checks.lightingReady ? '✓' : '✗'} Contrast / Lighting
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Floating Metric Card Overlay */}
             <div style={{ position: 'absolute', bottom: '16px', left: '16px', backgroundColor: 'rgba(18, 18, 20, 0.9)', borderRadius: '12px', padding: '12px 16px', border: '1px solid #27272A', zIndex: 20 }}>
@@ -418,8 +482,27 @@ export default function Page() {
             </div>
 
             {/* Guided Flow Buttons */}
-            {step === 'align' && plateColor === 'green' && (
-              <button onClick={handleReady} style={{ position: 'absolute', bottom: '16px', right: '16px', padding: '12px 24px', borderRadius: '8px', border: 'none', backgroundColor: '#00FF66', color: '#000', fontWeight: '800', fontSize: '14px', cursor: 'pointer', zIndex: 30 }}>READY ✓</button>
+            {step === 'align' && (
+              <button
+                onClick={handleReady}
+                disabled={readinessScore < 95}
+                style={{
+                  position: 'absolute',
+                  bottom: '16px',
+                  right: '16px',
+                  padding: '12px 24px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: readinessScore >= 95 ? '#00FF66' : '#27272A',
+                  color: readinessScore >= 95 ? '#000' : '#71717A',
+                  fontWeight: '800',
+                  fontSize: '14px',
+                  cursor: readinessScore >= 95 ? 'pointer' : 'not-allowed',
+                  zIndex: 30
+                }}
+              >
+                {readinessScore >= 95 ? 'READY ✓' : 'ALIGN CAMERA...'}
+              </button>
             )}
 
             {step === 'ready' && (
