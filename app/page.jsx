@@ -14,7 +14,7 @@ export default function Page() {
   const [cameraError, setCameraError] = useState('')
   const [audioFeedback, setAudioFeedback] = useState(true)
 
-  // --- PRE-FLIGHT CHECKLIST STATE ---
+  // PRE-FLIGHT CHECKLIST STATE
   const [readinessScore, setReadinessScore] = useState(0)
   const [checks, setChecklist] = useState({
     plateLocked: false,
@@ -462,10 +462,10 @@ export default function Page() {
                     {checks.plateLocked ? '✓' : '✗'} Weight Plate Locked
                   </div>
                   <div style={{ color: checks.framingDistance ? '#00FF66' : '#A1A1AA' }}>
-                    {checks.framingDistance ? '✓' : '✗'} Distance ($1.5\text{--}2.5\text{m}$)
+                    {checks.framingDistance ? '✓' : '✗'} Distance (1.5-2.5m)
                   </div>
                   <div style={{ color: checks.fpsReady ? '#00FF66' : '#A1A1AA' }}>
-                    {checks.fpsReady ? '✓' : '✗'} Camera FPS ($\ge 50$)
+                    {checks.fpsReady ? '✓' : '✗'} Camera FPS (50+)
                   </div>
                   <div style={{ color: checks.lightingReady ? '#00FF66' : '#A1A1AA' }}>
                     {checks.lightingReady ? '✓' : '✗'} Contrast / Lighting
