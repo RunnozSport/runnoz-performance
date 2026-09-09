@@ -57,7 +57,7 @@ export default function Page() {
   const samplesRef = useRef([])
   const pathRef = useRef([])
 
-  // Physics & Rep State Refs (Includes instant rep count synchronization)
+  // Physics & Rep State Refs
   const repCountRef = useRef(0)
   const lastPositionRef = useRef(null)
   const lastTimeRef = useRef(null)
@@ -69,12 +69,10 @@ export default function Page() {
   const fpsTimeRef = useRef(performance.now())
   const finishingRef = useRef(false)
 
-  // Sync step state to ref to avoid stale closures in requestAnimationFrame
   useEffect(() => {
     stepRef.current = step
   }, [step])
 
-  // Initialize processing canvas on mount
   useEffect(() => {
     const canvas = document.createElement('canvas')
     canvas.width = PROCESS_WIDTH
@@ -86,7 +84,6 @@ export default function Page() {
     }
   }, [])
 
-  // Audio Voice Feedback Engine
   const speakVelocity = useCallback(
     (velocity) => {
       if (!audioFeedback) return
@@ -101,7 +98,6 @@ export default function Page() {
     [audioFeedback]
   )
 
-  // Reset tracking references
   const resetTrackingState = () => {
     detectionRef.current = null
     templateRef.current = null
@@ -124,7 +120,6 @@ export default function Page() {
     setTrackingConfidence(0)
   }
 
-  // Extracts Sub-Pixel Correlation Template
   const createTemplate = (video, x, y) => {
     const canvas = processCanvasRef.current
     if (!canvas) return false
@@ -155,7 +150,6 @@ export default function Page() {
     }
   }
 
-  // GEOMETRY VALIDATION ENGINE: Enforces circular weight plate geometry
   const validatePlateGeometry = (canvas, x, y, radius) => {
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
     if (!ctx) return false
@@ -175,16 +169,13 @@ export default function Page() {
           const pixel = ctx.getImageData(Math.floor(pt.x), Math.floor(pt.y), 1, 1).data
           const lum = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]
           if (lum > 15) validEdges++
-        } catch (e) {
-          // Fallback
-        }
+        } catch (e) {}
       }
     })
 
     return validEdges >= 2
   }
 
-  // Fast Sub-Pixel SAD Cross-Correlation Optical Tracker
   const trackTemplate = (video) => {
     const canvas = processCanvasRef.current
     const template = templateRef.current
@@ -267,7 +258,6 @@ export default function Page() {
     return detection
   }
 
-  // Spatial Physics Engine (m/s)
   const calculateVelocity = (previousY, currentY, previousTime, currentTime) => {
     const dt = (currentTime - previousTime) / 1000
     if (dt <= 0 || dt > MAX_FRAME_INTERVAL) return null
@@ -277,7 +267,6 @@ export default function Page() {
     return displacementMeters / dt
   }
 
-  // Low-Pass Smoothing Filter
   const smoothVelocity = (velocity) => {
     velocitySamplesRef.current.push(velocity)
     if (velocitySamplesRef.current.length > 5) {
@@ -287,11 +276,9 @@ export default function Page() {
     return values.reduce((sum, value) => sum + value, 0) / values.length
   }
 
-  // Automated Movement Phase Segmentation Engine with Strict Target Rep Cap & Noise Guard
   const processRepVelocity = (velocity, now) => {
     const absoluteVelocity = Math.abs(velocity)
 
-    // Stop processing if set is already completing
     if (finishingRef.current) return
 
     if (velocity > MIN_CONCENTRIC_VELOCITY) {
@@ -336,14 +323,12 @@ export default function Page() {
             rom = (Math.max(...ys) - Math.min(...ys)) * metersPerPixel
           }
 
-          // NOISE GUARD: Discard micro-movements/un-racking jitter (< 18cm ROM or < 0.25s duration)
           if (rom < 0.18 || concentricTime < 0.25) {
             repStateRef.current = 'eccentric'
             velocitySamplesRef.current = []
             return
           }
 
-          // Synchronous Ref Counter Increment to guarantee exact target cap
           repCountRef.current += 1
           const newRepNumber = repCountRef.current
 
@@ -365,7 +350,6 @@ export default function Page() {
 
           speakVelocity(mean)
 
-          // STRICT FINISH GUARD: Auto-stop instantly when ref hits target reps
           if (repCountRef.current >= targetReps && !finishingRef.current) {
             finishingRef.current = true
             setTimeout(() => {
@@ -394,7 +378,6 @@ export default function Page() {
     }
   }
 
-  // Trajectory & Target Overlay Renderer
   const drawOverlay = (detection) => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -403,7 +386,6 @@ export default function Page() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-    // Green Dotted Trajectory Line
     if (stepRef.current === 'recording' && pathRef.current.length > 1) {
       ctx.beginPath()
       const first = pathRef.current[0]
@@ -442,7 +424,6 @@ export default function Page() {
     ctx.fillText(`${Math.round(detection.confidence)}%`, detection.x + 35, detection.y - 35)
   }
 
-  // 60 FPS Main Tracking Loop
   const trackingLoop = useCallback(() => {
     if (!trackingRef.current || !videoRef.current || !canvasRef.current) return
 
@@ -481,7 +462,6 @@ export default function Page() {
         setTrackingConfidence(Math.round(detection.confidence))
         setPlateDetected(detection.confidence >= 50)
 
-        // Alignment Diagnostic Validator
         if (stepRef.current === 'align') {
           const isCircularPlate = processCanvasRef.current
             ? validatePlateGeometry(processCanvasRef.current, detectionRef.current.x, detectionRef.current.y, detectionRef.current.radius)
@@ -511,7 +491,6 @@ export default function Page() {
           setReadinessScore(score)
         }
 
-        // Active Set Recording
         if (stepRef.current === 'recording') {
           const point = { x: detection.x, y: detection.y, t: now }
           pathRef.current.push(point)
@@ -567,8 +546,8 @@ export default function Page() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
           frameRate: { ideal: 60, min: 30 },
         },
         audio: false,
@@ -583,8 +562,8 @@ export default function Page() {
 
       const canvas = canvasRef.current
       if (canvas) {
-        canvas.width = video.videoWidth || 1280
-        canvas.height = video.videoHeight || 720
+        canvas.width = video.videoWidth || window.innerWidth
+        canvas.height = video.videoHeight || window.innerHeight
       }
 
       trackingRef.current = true
@@ -683,7 +662,6 @@ export default function Page() {
     setStep('setup')
   }
 
-  // Summary Metrics Computation
   const summary = useMemo(() => {
     if (repData.length === 0) {
       return { mean: 0, peak: 0, rom: 0, velocityLoss: 0 }
@@ -712,59 +690,60 @@ export default function Page() {
         background: '#0D0D0E',
         color: '#FFFFFF',
         fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
-        paddingBottom: 80,
       }}
     >
-      {/* HEADER */}
-      <header
-        style={{
-          padding: '16px 24px',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          borderBottom: '1px solid #242428',
-          maxWidth: '1200px',
-          margin: '0 auto',
-        }}
-      >
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 800 }}>VBT PERFORMANCE</div>
-          <div style={{ fontSize: 12, color: '#A1A1AA', marginTop: 3 }}>
-            {exercise} · {loadKg} kg × {targetReps} reps
+      {/* HEADER (Only on setup and summary) */}
+      {step !== 'align' && step !== 'ready' && step !== 'recording' && (
+        <header
+          style={{
+            padding: '16px 24px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            borderBottom: '1px solid #242428',
+            maxWidth: '1200px',
+            margin: '0 auto',
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800 }}>VBT PERFORMANCE</div>
+            <div style={{ fontSize: 12, color: '#A1A1AA', marginTop: 3 }}>
+              {exercise} · {loadKg} kg × {targetReps} reps
+            </div>
           </div>
-        </div>
 
-        <div style={{ display: 'flex', gap: 15, alignItems: 'center' }}>
-          <button
-            onClick={() => setAudioFeedback(!audioFeedback)}
-            style={{
-              border: 'none',
-              background: 'transparent',
-              color: '#FFF',
-              fontSize: 20,
-              cursor: 'pointer',
-              opacity: audioFeedback ? 1 : 0.35,
-            }}
-          >
-            🔊
-          </button>
-
-          {step !== 'setup' && (
+          <div style={{ display: 'flex', gap: 15, alignItems: 'center' }}>
             <button
-              onClick={resetAll}
+              onClick={() => setAudioFeedback(!audioFeedback)}
               style={{
                 border: 'none',
                 background: 'transparent',
                 color: '#FFF',
-                fontSize: 22,
+                fontSize: 20,
                 cursor: 'pointer',
+                opacity: audioFeedback ? 1 : 0.35,
               }}
             >
-              ←
+              🔊
             </button>
-          )}
-        </div>
-      </header>
+
+            {step !== 'setup' && (
+              <button
+                onClick={resetAll}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: '#FFF',
+                  fontSize: 22,
+                  cursor: 'pointer',
+                }}
+              >
+                ←
+              </button>
+            )}
+          </div>
+        </header>
+      )}
 
       {/* SETUP SCREEN */}
       {step === 'setup' && (
@@ -860,211 +839,289 @@ export default function Page() {
         </section>
       )}
 
-      {/* CAMERA SCREEN - EXPANDED WIDE VIEWPORT */}
+      {/* FULL-PAGE EDGE-TO-EDGE CAMERA SCREEN */}
       {(step === 'align' || step === 'ready' || step === 'recording') && (
-        <section style={{ padding: '16px 24px', maxWidth: '1200px', margin: '0 auto' }}>
+        <section
+          style={{
+            position: 'fixed',
+            inset: 0,
+            width: '100vw',
+            height: '100vh',
+            backgroundColor: '#000',
+            zIndex: 1000,
+            overflow: 'hidden',
+          }}
+        >
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+            }}
+          />
+
+          <canvas
+            ref={canvasRef}
+            onClick={handleTapToLock}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              zIndex: 10,
+              cursor: 'crosshair',
+            }}
+          />
+
+          {/* FLOATING TOP ACTION BAR */}
           <div
             style={{
-              position: 'relative',
-              width: '100%',
-              aspectRatio: '16 / 9',
-              background: '#18181B',
-              borderRadius: 16,
-              overflow: 'hidden',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+              position: 'absolute',
+              top: 20,
+              left: 20,
+              right: 20,
+              display: 'flex',
+              justify: 'space-between',
+              alignItems: 'center',
+              zIndex: 30,
             }}
           >
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-            />
-
-            <canvas
-              ref={canvasRef}
-              onClick={handleTapToLock}
+            <button
+              onClick={resetAll}
               style={{
-                position: 'absolute',
-                inset: 0,
-                width: '100%',
-                height: '100%',
-                zIndex: 10,
-                cursor: 'crosshair',
-              }}
-            />
-
-            {/* PRE-FLIGHT DIAGNOSTICS OVERLAY */}
-            {step === 'align' && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 16,
-                  left: 16,
-                  right: 16,
-                  maxWidth: '500px',
-                  zIndex: 20,
-                  padding: '14px 18px',
-                  borderRadius: 12,
-                  background: 'rgba(15,15,17,.92)',
-                  border: '1px solid #303035',
-                  backdropFilter: 'blur(12px)',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <strong style={{ fontSize: 12, letterSpacing: '0.5px' }}>CAMERA DIAGNOSTIC</strong>
-                  <strong style={{ color: readinessScore >= 80 ? '#00FF66' : '#EF4444' }}>
-                    {readinessScore}%
-                  </strong>
-                </div>
-
-                <div
-                  style={{
-                    height: 6,
-                    background: '#27272A',
-                    borderRadius: 10,
-                    overflow: 'hidden',
-                    marginBottom: 12,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${readinessScore}%`,
-                      height: '100%',
-                      background: readinessScore >= 80 ? '#00FF66' : '#EF4444',
-                      transition: 'width .3s',
-                    }}
-                  />
-                </div>
-
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr',
-                    gap: 7,
-                    fontSize: 11,
-                  }}
-                >
-                  <Diagnostic ok={checks.tracking} text="Plate Verified" />
-                  <Diagnostic ok={checks.framing} text="Framing" />
-                  <Diagnostic ok={checks.fps} text={`FPS ${fps}`} />
-                  <Diagnostic ok={checks.lighting} text="Tracking Quality" />
-                  <Diagnostic ok={checks.calibration} text="Scale Calibrated" />
-                </div>
-              </div>
-            )}
-
-            {/* LIVE METRIC OVERLAY */}
-            <div
-              style={{
-                position: 'absolute',
-                bottom: 20,
-                left: 20,
-                zIndex: 20,
-                padding: '14px 20px',
-                borderRadius: 14,
-                background: 'rgba(15,15,17,.92)',
-                border: '1px solid #303035',
+                border: 'none',
+                background: 'rgba(15,15,17,0.85)',
+                color: '#FFF',
+                width: 44,
+                height: 44,
+                borderRadius: '50%',
+                fontSize: 20,
+                cursor: 'pointer',
                 backdropFilter: 'blur(10px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 4px 15px rgba(0,0,0,0.5)',
               }}
             >
-              <div style={{ fontSize: 44, lineHeight: 1, fontWeight: 900, color: '#00FF66' }}>
-                {currentVelocity.toFixed(2)}
-              </div>
-              <div style={{ fontSize: 11, color: '#A1A1AA', marginTop: 5, fontWeight: 700 }}>
-                MEAN VELOCITY · M/S
-              </div>
-              <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800 }}>
-                REP {repCount}/{targetReps}
-              </div>
-            </div>
+              ←
+            </button>
 
             {/* RECORDING BADGE */}
-            {step === 'recording' && (
+            {step === 'recording' ? (
               <div
                 style={{
-                  position: 'absolute',
-                  top: 20,
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  zIndex: 20,
                   padding: '8px 18px',
                   borderRadius: 20,
-                  background: 'rgba(239,68,68,.95)',
+                  background: 'rgba(239,68,68,0.95)',
                   fontSize: 12,
                   fontWeight: 900,
                   letterSpacing: '1px',
+                  boxShadow: '0 4px 15px rgba(239,68,68,0.4)',
                 }}
               >
                 ● RECORDING
               </div>
-            )}
-
-            {/* ACTION BUTTONS */}
-            {step === 'align' && (
-              <button
-                disabled={readinessScore < 80}
-                onClick={handleReady}
+            ) : (
+              <div
                 style={{
-                  position: 'absolute',
-                  right: 20,
-                  bottom: 20,
-                  zIndex: 30,
-                  padding: '14px 24px',
-                  borderRadius: 10,
-                  border: 'none',
-                  background: readinessScore >= 80 ? '#00FF66' : '#3F3F46',
-                  color: readinessScore >= 80 ? '#000' : '#A1A1AA',
-                  fontWeight: 900,
-                  fontSize: 14,
-                  cursor: readinessScore >= 80 ? 'pointer' : 'not-allowed',
+                  padding: '8px 16px',
+                  borderRadius: 20,
+                  background: 'rgba(15,15,17,0.85)',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: '#A1A1AA',
+                  backdropFilter: 'blur(10px)',
                 }}
               >
-                {readinessScore >= 80 ? 'Ready →' : 'Improve Setup'}
-              </button>
+                {exercise} · {loadKg}kg
+              </div>
             )}
 
-            {step === 'ready' && (
-              <button
-                onClick={handleStartRecording}
-                style={{
-                  position: 'absolute',
-                  bottom: 20,
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  zIndex: 30,
-                  padding: '16px 40px',
-                  borderRadius: 12,
-                  border: 'none',
-                  background: '#00FF66',
-                  color: '#000',
-                  fontWeight: 900,
-                  fontSize: 16,
-                  cursor: 'pointer',
-                  boxShadow: '0 10px 25px rgba(0,255,102,0.3)',
-                }}
-              >
-                START SET
-              </button>
-            )}
+            <button
+              onClick={() => setAudioFeedback(!audioFeedback)}
+              style={{
+                border: 'none',
+                background: 'rgba(15,15,17,0.85)',
+                color: '#FFF',
+                width: 44,
+                height: 44,
+                borderRadius: '50%',
+                fontSize: 18,
+                cursor: 'pointer',
+                backdropFilter: 'blur(10px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: audioFeedback ? 1 : 0.4,
+                boxShadow: '0 4px 15px rgba(0,0,0,0.5)',
+              }}
+            >
+              🔊
+            </button>
           </div>
 
+          {/* PRE-FLIGHT DIAGNOSTICS OVERLAY */}
+          {step === 'align' && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 80,
+                left: 20,
+                right: 20,
+                maxWidth: '450px',
+                zIndex: 20,
+                padding: '14px 18px',
+                borderRadius: 14,
+                background: 'rgba(15,15,17,.9)',
+                border: '1px solid #303035',
+                backdropFilter: 'blur(12px)',
+                boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                <strong style={{ fontSize: 12, letterSpacing: '0.5px' }}>CAMERA DIAGNOSTIC</strong>
+                <strong style={{ color: readinessScore >= 80 ? '#00FF66' : '#EF4444' }}>
+                  {readinessScore}%
+                </strong>
+              </div>
+
+              <div
+                style={{
+                  height: 6,
+                  background: '#27272A',
+                  borderRadius: 10,
+                  overflow: 'hidden',
+                  marginBottom: 12,
+                }}
+              >
+                <div
+                  style={{
+                    width: `${readinessScore}%`,
+                    height: '100%',
+                    background: readinessScore >= 80 ? '#00FF66' : '#EF4444',
+                    transition: 'width .3s',
+                  }}
+                />
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: 7,
+                  fontSize: 11,
+                }}
+              >
+                <Diagnostic ok={checks.tracking} text="Plate Verified" />
+                <Diagnostic ok={checks.framing} text="Framing" />
+                <Diagnostic ok={checks.fps} text={`FPS ${fps}`} />
+                <Diagnostic ok={checks.lighting} text="Tracking Quality" />
+                <Diagnostic ok={checks.calibration} text="Scale Calibrated" />
+              </div>
+            </div>
+          )}
+
+          {/* FLOATING LIVE METRIC OVERLAY */}
           <div
             style={{
-              marginTop: 14,
-              padding: 14,
-              background: '#18181B',
-              borderRadius: 10,
+              position: 'absolute',
+              bottom: 30,
+              left: 20,
+              zIndex: 20,
+              padding: '16px 24px',
+              borderRadius: 16,
+              background: 'rgba(15,15,17,.9)',
+              border: '1px solid #303035',
+              backdropFilter: 'blur(12px)',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+            }}
+          >
+            <div style={{ fontSize: 48, lineHeight: 1, fontWeight: 900, color: '#00FF66' }}>
+              {currentVelocity.toFixed(2)}
+            </div>
+            <div style={{ fontSize: 11, color: '#A1A1AA', marginTop: 6, fontWeight: 700 }}>
+              MEAN VELOCITY · M/S
+            </div>
+            <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800 }}>
+              REP {repCount}/{targetReps}
+            </div>
+          </div>
+
+          {/* INSTRUCTION PILL */}
+          <div
+            style={{
+              position: 'absolute',
+              bottom: 110,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              padding: '8px 16px',
+              background: 'rgba(15,15,17,0.85)',
+              borderRadius: 20,
               color: '#A1A1AA',
               fontSize: 12,
-              textAlign: 'center',
+              backdropFilter: 'blur(10px)',
+              zIndex: 20,
+              pointerEvents: 'none',
+              whiteSpace: 'nowrap',
             }}
           >
             {step === 'align' && 'Tap the weight plate sleeve to lock the target.'}
             {step === 'ready' && 'Get into position and start the set when ready.'}
             {step === 'recording' && `Tracking Confidence: ${trackingConfidence}% · ${fps} FPS`}
           </div>
+
+          {/* ACTION BUTTONS */}
+          {step === 'align' && (
+            <button
+              disabled={readinessScore < 80}
+              onClick={handleReady}
+              style={{
+                position: 'absolute',
+                right: 20,
+                bottom: 30,
+                zIndex: 30,
+                padding: '16px 28px',
+                borderRadius: 12,
+                border: 'none',
+                background: readinessScore >= 80 ? '#00FF66' : '#3F3F46',
+                color: readinessScore >= 80 ? '#000' : '#A1A1AA',
+                fontWeight: 900,
+                fontSize: 15,
+                cursor: readinessScore >= 80 ? 'pointer' : 'not-allowed',
+                boxShadow: readinessScore >= 80 ? '0 10px 25px rgba(0,255,102,0.3)' : 'none',
+              }}
+            >
+              {readinessScore >= 80 ? 'Ready →' : 'Improve Setup'}
+            </button>
+          )}
+
+          {step === 'ready' && (
+            <button
+              onClick={handleStartRecording}
+              style={{
+                position: 'absolute',
+                bottom: 30,
+                right: 20,
+                zIndex: 30,
+                padding: '16px 36px',
+                borderRadius: 12,
+                border: 'none',
+                background: '#00FF66',
+                color: '#000',
+                fontWeight: 900,
+                fontSize: 16,
+                cursor: 'pointer',
+                boxShadow: '0 10px 25px rgba(0,255,102,0.4)',
+              }}
+            >
+              START SET
+            </button>
+          )}
         </section>
       )}
 
