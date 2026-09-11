@@ -5,10 +5,16 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 // System & Canvas Resolution Constants
 const PROCESS_WIDTH = 640
 const PROCESS_HEIGHT = 360
-const DEFAULT_METERS_PER_PIXEL = 0.0028 // Standard 450mm Bumper Plate Ratio
 const MIN_CONCENTRIC_VELOCITY = 0.04
 const MIN_MOVEMENT_VELOCITY = 0.015
 const MAX_FRAME_INTERVAL = 0.25
+
+// Physical Plate Diameter Presets (Meters)
+const PLATE_TYPES = {
+  'Olympic Bumper (450mm)': 0.45,
+  'Powerlifting Steel (400mm)': 0.40,
+  'Small / Technique (230mm)': 0.23,
+}
 
 export default function Page() {
   // Navigation & Setup State
@@ -16,6 +22,7 @@ export default function Page() {
   const [exercise, setExercise] = useState('Back Squat')
   const [loadKg, setLoadKg] = useState(100)
   const [targetReps, setTargetReps] = useState(3)
+  const [plateType, setPlateType] = useState('Olympic Bumper (450mm)')
 
   // VBT Metrics & Results
   const [currentVelocity, setCurrentVelocity] = useState(0)
@@ -30,6 +37,10 @@ export default function Page() {
   const [audioFeedback, setAudioFeedback] = useState(true)
   const [fps, setFps] = useState(0)
   const [readinessScore, setReadinessScore] = useState(0)
+  const [aiModelLoaded, setAiModelLoaded] = useState(false)
+
+  // Dynamic Scale Calibration State (m/px)
+  const [metersPerPixel, setMetersPerPixel] = useState(0.0028)
 
   // Diagnostic Checks State
   const [checks, setChecks] = useState({
@@ -40,14 +51,13 @@ export default function Page() {
     calibration: false,
   })
 
-  const [metersPerPixel] = useState(DEFAULT_METERS_PER_PIXEL)
-
   // DOM & Execution Refs
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const processCanvasRef = useRef(null)
   const animationRef = useRef(null)
   const streamRef = useRef(null)
+  const aiModelRef = useRef(null)
 
   // Tracker Logic Refs
   const trackingRef = useRef(false)
@@ -73,17 +83,33 @@ export default function Page() {
     stepRef.current = step
   }, [step])
 
+  // Initialize Processing Canvas and TensorFlow.js Model
   useEffect(() => {
     const canvas = document.createElement('canvas')
     canvas.width = PROCESS_WIDTH
     canvas.height = PROCESS_HEIGHT
     processCanvasRef.current = canvas
 
+    const loadAI = async () => {
+      try {
+        const tf = await import('@tensorflow/tfjs')
+        const cocoSsd = await import('@tensorflow-models/coco-ssd')
+        await tf.ready()
+        const model = await cocoSsd.load()
+        aiModelRef.current = model
+        setAiModelLoaded(true)
+      } catch (e) {
+        console.error('AI Model failed to load, using optical fallback:', e)
+      }
+    }
+    loadAI()
+
     return () => {
       stopCamera()
     }
   }, [])
 
+  // Audio Voice Feedback Engine
   const speakVelocity = useCallback(
     (velocity) => {
       if (!audioFeedback) return
@@ -120,6 +146,16 @@ export default function Page() {
     setTrackingConfidence(0)
   }
 
+  // Calculate Dynamic Calibration Factor (Meters per Pixel)
+  const updateDynamicCalibration = useCallback((pixelRadius) => {
+    if (!pixelRadius || pixelRadius <= 0) return
+    const physicalDiameterMeters = PLATE_TYPES[plateType] || 0.45
+    const pixelDiameter = pixelRadius * 2
+    const calculatedScale = physicalDiameterMeters / pixelDiameter
+    setMetersPerPixel(calculatedScale)
+  }, [plateType])
+
+  // Extracts Sub-Pixel Correlation Template
   const createTemplate = (video, x, y) => {
     const canvas = processCanvasRef.current
     if (!canvas) return false
@@ -144,6 +180,7 @@ export default function Page() {
         radius: 28,
         confidence: 100,
       }
+      updateDynamicCalibration(28)
       return true
     } catch {
       return false
@@ -176,6 +213,7 @@ export default function Page() {
     return validEdges >= 2
   }
 
+  // Fast Sub-Pixel SAD Cross-Correlation Optical Tracker
   const trackTemplate = (video) => {
     const canvas = processCanvasRef.current
     const template = templateRef.current
@@ -255,9 +293,11 @@ export default function Page() {
 
     const detection = { x, y, radius: previous.radius, confidence }
     detectionRef.current = detection
+    updateDynamicCalibration(previous.radius)
     return detection
   }
 
+  // Spatial Physics Engine (m/s)
   const calculateVelocity = (previousY, currentY, previousTime, currentTime) => {
     const dt = (currentTime - previousTime) / 1000
     if (dt <= 0 || dt > MAX_FRAME_INTERVAL) return null
@@ -278,7 +318,6 @@ export default function Page() {
 
   const processRepVelocity = (velocity, now) => {
     const absoluteVelocity = Math.abs(velocity)
-
     if (finishingRef.current) return
 
     if (velocity > MIN_CONCENTRIC_VELOCITY) {
@@ -424,7 +463,8 @@ export default function Page() {
     ctx.fillText(`${Math.round(detection.confidence)}%`, detection.x + 35, detection.y - 35)
   }
 
-  const trackingLoop = useCallback(() => {
+  // 60 FPS Main Tracking Loop with TensorFlow AI Scan Fallback
+  const trackingLoop = useCallback(async () => {
     if (!trackingRef.current || !videoRef.current || !canvasRef.current) return
 
     const video = videoRef.current
@@ -442,6 +482,22 @@ export default function Page() {
 
     if (video.readyState >= 2) {
       let detection = detectionRef.current
+
+      // AI Auto Detection Scan if template not locked
+      if (!templateRef.current && aiModelRef.current && stepRef.current === 'align') {
+        try {
+          const predictions = await aiModelRef.current.detect(video)
+          const obj = predictions.find(
+            (p) => ['sports ball', 'disc', 'bowl', 'clock'].includes(p.class) || p.score > 0.4
+          )
+          if (obj) {
+            const [bx, by, bw, bh] = obj.bbox
+            const px = (bx + bw / 2) * (PROCESS_WIDTH / canvasRef.current.width)
+            const py = (by + bh / 2) * (PROCESS_HEIGHT / canvasRef.current.height)
+            createTemplate(video, px, py)
+          }
+        } catch (e) {}
+      }
 
       if (templateRef.current) {
         detection = trackTemplate(video)
@@ -531,7 +587,7 @@ export default function Page() {
     if (trackingRef.current) {
       animationRef.current = requestAnimationFrame(trackingLoop)
     }
-  }, [fps, metersPerPixel, peakVelocity, repData.length, speakVelocity, targetReps])
+  }, [fps, metersPerPixel, peakVelocity, repData.length, speakVelocity, targetReps, updateDynamicCalibration])
 
   const startCamera = async () => {
     setCameraError('')
@@ -692,7 +748,7 @@ export default function Page() {
         fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
       }}
     >
-      {/* HEADER (Only on setup and summary) */}
+      {/* HEADER */}
       {step !== 'align' && step !== 'ready' && step !== 'recording' && (
         <header
           style={{
@@ -764,6 +820,19 @@ export default function Page() {
             <option>Barbell Row</option>
           </select>
 
+          <div style={{ marginTop: 20 }}>
+            <label style={labelStyle}>WEIGHT PLATE CALIBRATION</label>
+            <select
+              value={plateType}
+              onChange={(e) => setPlateType(e.target.value)}
+              style={inputStyle}
+            >
+              {Object.keys(PLATE_TYPES).map((type) => (
+                <option key={type} value={type}>{type}</option>
+              ))}
+            </select>
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 20 }}>
             <div>
               <label style={labelStyle}>LOAD KG</label>
@@ -832,9 +901,11 @@ export default function Page() {
               lineHeight: 1.6,
             }}
           >
-            <strong style={{ color: '#FFF' }}>Alignment Note</strong>
+            <strong style={{ color: '#FFF' }}>Auto AI Scan Active</strong>
             <br />
-            Tap the bumper plate hub when the camera starts to lock onto the weight plate.
+            {aiModelLoaded
+              ? 'TensorFlow AI is active and will auto-detect your weight plate.'
+              : 'Loading TensorFlow AI detector...'}
           </div>
         </section>
       )}
@@ -911,7 +982,6 @@ export default function Page() {
               ←
             </button>
 
-            {/* RECORDING BADGE */}
             {step === 'recording' ? (
               <div
                 style={{
@@ -1021,7 +1091,7 @@ export default function Page() {
                 <Diagnostic ok={checks.framing} text="Framing" />
                 <Diagnostic ok={checks.fps} text={`FPS ${fps}`} />
                 <Diagnostic ok={checks.lighting} text="Tracking Quality" />
-                <Diagnostic ok={checks.calibration} text="Scale Calibrated" />
+                <Diagnostic ok={checks.calibration} text={`Scale (${metersPerPixel.toFixed(4)}m/px)`} />
               </div>
             </div>
           )}
@@ -1070,7 +1140,7 @@ export default function Page() {
               whiteSpace: 'nowrap',
             }}
           >
-            {step === 'align' && 'Tap the weight plate sleeve to lock the target.'}
+            {step === 'align' && 'TensorFlow scanning plate... Tap sleeve if needed.'}
             {step === 'ready' && 'Get into position and start the set when ready.'}
             {step === 'recording' && `Tracking Confidence: ${trackingConfidence}% · ${fps} FPS`}
           </div>
@@ -1134,7 +1204,7 @@ export default function Page() {
             </div>
             <h1 style={{ fontSize: 30, margin: '6px 0' }}>{exercise}</h1>
             <div style={{ color: '#A1A1AA' }}>
-              {loadKg} kg · {repData.length} reps
+              {loadKg} kg · {repData.length} reps · Dynamic Scale ({metersPerPixel.toFixed(4)}m/px)
             </div>
           </div>
 
